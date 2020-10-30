@@ -7,8 +7,6 @@
 
 // eslint-disable-next-line func-names
 (function() {
-  'use strict';
-
   window.Whisper = window.Whisper || {};
 
   Whisper.StickerPackInstallFailedToast = Whisper.ToastView.extend({
@@ -63,7 +61,7 @@
     className: 'app-loading-screen',
     updateProgress(count) {
       if (count > 0) {
-        const message = i18n('loadingMessages', count.toString());
+        const message = i18n('loadingMessages', [count.toString()]);
         this.$('.message').text(message);
       }
     },
@@ -84,6 +82,13 @@
         model: { window: options.window },
       });
 
+      Whisper.events.on('refreshConversation', ({ oldId, newId }) => {
+        const convo = this.conversation_stack.lastConversation;
+        if (convo && convo.get('id') === oldId) {
+          this.conversation_stack.open(newId);
+        }
+      });
+
       if (!options.initialLoadComplete) {
         this.appLoadingScreen = new Whisper.AppLoadingScreen();
         this.appLoadingScreen.render();
@@ -91,6 +96,7 @@
         this.startConnectionListener();
       } else {
         this.setupLeftPane();
+        this.setupCallManagerUI();
       }
 
       Whisper.events.on('pack-install-failed', () => {
@@ -105,6 +111,16 @@
     },
     events: {
       click: 'onClick',
+    },
+    setupCallManagerUI() {
+      if (this.callManagerView) {
+        return;
+      }
+      this.callManagerView = new Whisper.ReactWrapperView({
+        className: 'call-manager-wrapper',
+        JSX: Signal.State.Roots.createCallManager(window.reduxStore),
+      });
+      this.$('.call-manager-placeholder').append(this.callManagerView.el);
     },
     setupLeftPane() {
       if (this.leftPaneView) {
@@ -136,7 +152,9 @@
             this.onEmpty();
             break;
           default:
-            // We also replicate empty here
+            window.log.warn(
+              'startConnectionListener: Found unexpected socket status; calling onEmpty() manually.'
+            );
             this.onEmpty();
             break;
         }
@@ -144,6 +162,7 @@
     },
     onEmpty() {
       this.setupLeftPane();
+      this.setupCallManagerUI();
 
       const view = this.appLoadingScreen;
       if (view) {

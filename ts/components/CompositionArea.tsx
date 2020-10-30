@@ -2,11 +2,7 @@ import * as React from 'react';
 import { Editor } from 'draft-js';
 import { get, noop } from 'lodash';
 import classNames from 'classnames';
-import {
-  EmojiButton,
-  EmojiPickDataType,
-  Props as EmojiButtonProps,
-} from './emoji/EmojiButton';
+import { EmojiButton, Props as EmojiButtonProps } from './emoji/EmojiButton';
 import {
   Props as StickerButtonProps,
   StickerButton,
@@ -16,11 +12,18 @@ import {
   InputApi,
   Props as CompositionInputProps,
 } from './CompositionInput';
+import {
+  MessageRequestActions,
+  Props as MessageRequestActionsProps,
+} from './conversation/MessageRequestActions';
 import { countStickers } from './stickers/lib';
 import { LocalizerType } from '../types/Util';
+import { EmojiPickDataType } from './emoji/EmojiPicker';
 
 export type OwnProps = {
   readonly i18n: LocalizerType;
+  readonly messageRequestsEnabled?: boolean;
+  readonly acceptedMessageRequest?: boolean;
   readonly compositionApi?: React.MutableRefObject<{
     focusInput: () => void;
     isDirty: () => boolean;
@@ -44,6 +47,8 @@ export type Props = Pick<
   | 'onEditorStateChange'
   | 'onTextTooLong'
   | 'startingText'
+  | 'clearQuotedMessage'
+  | 'getQuotedMessage'
 > &
   Pick<
     EmojiButtonProps,
@@ -64,14 +69,15 @@ export type Props = Pick<
     | 'showPickerHint'
     | 'clearShowPickerHint'
   > &
+  MessageRequestActionsProps &
   OwnProps;
 
 const emptyElement = (el: HTMLElement) => {
-  // tslint:disable-next-line no-inner-html
+  // Necessary to deal with Backbone views
+  // eslint-disable-next-line no-param-reassign
   el.innerHTML = '';
 };
 
-// tslint:disable-next-line max-func-body-length
 export const CompositionArea = ({
   i18n,
   attachmentListEl,
@@ -84,6 +90,8 @@ export const CompositionArea = ({
   onEditorStateChange,
   onTextTooLong,
   startingText,
+  clearQuotedMessage,
+  getQuotedMessage,
   // EmojiButton
   onPickEmoji,
   onSetSkinTone,
@@ -102,7 +110,21 @@ export const CompositionArea = ({
   clearShowIntroduction,
   showPickerHint,
   clearShowPickerHint,
-}: Props) => {
+  // Message Requests
+  acceptedMessageRequest,
+  conversationType,
+  isBlocked,
+  messageRequestsEnabled,
+  name,
+  onAccept,
+  onBlock,
+  onBlockAndDelete,
+  onDelete,
+  onUnblock,
+  phoneNumber,
+  profileName,
+  title,
+}: Props): JSX.Element => {
   const [disabled, setDisabled] = React.useState(false);
   const [showMic, setShowMic] = React.useState(!startingText);
   const [micActive, setMicActive] = React.useState(false);
@@ -144,6 +166,8 @@ export const CompositionArea = ({
   const attSlotRef = React.useRef<HTMLDivElement>(null);
 
   if (compositionApi) {
+    // Using a React.MutableRefObject, so we need to reassign this prop.
+    // eslint-disable-next-line no-param-reassign
     compositionApi.current = {
       isDirty: () => dirty,
       focusInput,
@@ -230,7 +254,12 @@ export const CompositionArea = ({
   const attButton = (
     <div className="module-composition-area__button-cell">
       <div className="choose-file">
-        <button className="paperclip thumbnail" onClick={onChooseAttachment} />
+        <button
+          type="button"
+          className="paperclip thumbnail"
+          onClick={onChooseAttachment}
+          aria-label={i18n('CompositionArea--attach-file')}
+        />
       </div>
     </div>
   );
@@ -243,8 +272,10 @@ export const CompositionArea = ({
       )}
     >
       <button
+        type="button"
         className="module-composition-area__send-button"
         onClick={handleForceSend}
+        aria-label={i18n('sendMessageToContact')}
       />
     </div>
   );
@@ -295,10 +326,30 @@ export const CompositionArea = ({
     };
   }, [setLarge]);
 
+  if ((!acceptedMessageRequest || isBlocked) && messageRequestsEnabled) {
+    return (
+      <MessageRequestActions
+        i18n={i18n}
+        conversationType={conversationType}
+        isBlocked={isBlocked}
+        onBlock={onBlock}
+        onBlockAndDelete={onBlockAndDelete}
+        onUnblock={onUnblock}
+        onDelete={onDelete}
+        onAccept={onAccept}
+        name={name}
+        profileName={profileName}
+        phoneNumber={phoneNumber}
+        title={title}
+      />
+    );
+  }
+
   return (
     <div className="module-composition-area">
       <div className="module-composition-area__toggle-large">
         <button
+          type="button"
           className={classNames(
             'module-composition-area__toggle-large__button',
             large
@@ -308,6 +359,7 @@ export const CompositionArea = ({
           // This prevents the user from tabbing here
           tabIndex={-1}
           onClick={handleToggleLarge}
+          aria-label={i18n('CompositionArea--expand')}
         />
       </div>
       <div
@@ -339,6 +391,8 @@ export const CompositionArea = ({
             onDirtyChange={setDirty}
             skinTone={skinTone}
             startingText={startingText}
+            clearQuotedMessage={clearQuotedMessage}
+            getQuotedMessage={getQuotedMessage}
           />
         </div>
         {!large ? (

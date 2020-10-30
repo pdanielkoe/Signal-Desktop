@@ -1,33 +1,44 @@
-// tslint:disable no-bitwise no-default-export
+/* eslint-disable @typescript-eslint/ban-types */
+/* eslint-disable no-bitwise */
+/* eslint-disable class-methods-use-this */
+/* eslint-disable more/no-then */
+/* eslint-disable camelcase */
+/* eslint-disable @typescript-eslint/no-explicit-any */
+/* eslint-disable max-classes-per-file */
 
 import { isNumber, map, omit } from 'lodash';
-import { w3cwebsocket as WebSocket } from 'websocket';
 import PQueue from 'p-queue';
 import { v4 as getGuid } from 'uuid';
 
+import { SessionCipherClass, SignalProtocolAddressClass } from '../libsignal.d';
+import { BatcherType, createBatcher } from '../util/batcher';
+
 import EventTarget from './EventTarget';
 import { WebAPIType } from './WebAPI';
-import { BatcherType, createBatcher } from '../util/batcher';
 import utils from './Helpers';
 import WebSocketResource, {
   IncomingWebSocketRequest,
 } from './WebsocketResources';
 import Crypto from './Crypto';
-import { SessionCipherClass, SignalProtocolAddressClass } from '../libsignal.d';
 import { ContactBuffer, GroupBuffer } from './ContactsParser';
 import { IncomingIdentityKeyError } from './Errors';
 
 import {
   AttachmentPointerClass,
+  CallingMessageClass,
   DataMessageClass,
+  DownloadAttachmentType,
   EnvelopeClass,
-  ProtoBigNumberType,
   ReceiptMessageClass,
   SyncMessageClass,
   TypingMessageClass,
   UnprocessedType,
   VerifiedClass,
 } from '../textsecure.d';
+
+import { WebSocket } from './WebSocket';
+
+import { deriveGroupFields, MASTER_KEY_LENGTH } from '../groups';
 
 const RETRY_TIMEOUT = 2 * 60 * 1000;
 
@@ -41,7 +52,10 @@ declare global {
     data?: any;
     deliveryReceipt?: any;
     error?: any;
+    eventType?: string | number;
     groupDetails?: any;
+    groupId?: string;
+    messageRequestResponseType?: number;
     proto?: any;
     read?: any;
     reason?: any;
@@ -51,6 +65,9 @@ declare global {
     source?: any;
     sourceUuid?: any;
     stickerPacks?: any;
+    threadE164?: string;
+    threadUuid?: string;
+    storageServiceKey?: ArrayBuffer;
     timestamp?: any;
     typing?: any;
     verified?: any;
@@ -61,22 +78,6 @@ declare global {
     senderUuid?: SignalProtocolAddressClass;
   }
 }
-
-type AttachmentType = {
-  cdnId?: string;
-  cdnKey?: string;
-  data: ArrayBuffer;
-  contentType?: string;
-  size?: number;
-  fileName?: string;
-  flags?: number;
-  width?: number;
-  height?: number;
-  caption?: string;
-  blurHash?: string;
-  uploadTimestamp?: ProtoBigNumberType;
-  cdnNumber?: number;
-};
 
 type CacheAddItemType = {
   envelope: EnvelopeClass;
@@ -91,30 +92,51 @@ type CacheUpdateItemType = {
 
 class MessageReceiverInner extends EventTarget {
   _onClose?: (ev: any) => Promise<void>;
+
   appQueue: PQueue;
+
   cacheAddBatcher: BatcherType<CacheAddItemType>;
+
   cacheRemoveBatcher: BatcherType<string>;
+
   cacheUpdateBatcher: BatcherType<CacheUpdateItemType>;
+
   calledClose?: boolean;
+
   count: number;
+
   deviceId: number;
+
   hasConnected?: boolean;
+
   incomingQueue: PQueue;
+
   isEmptied?: boolean;
-  // tslint:disable-next-line variable-name
+
   number_id: string | null;
+
   password: string;
+
   pendingQueue: PQueue;
+
   retryCachedTimeout: any;
+
   server: WebAPIType;
+
   serverTrustRoot: ArrayBuffer;
+
   signalingKey: ArrayBuffer;
+
   socket?: WebSocket;
+
   stoppingProcessing?: boolean;
+
   username: string;
+
   uuid: string;
-  // tslint:disable-next-line variable-name
+
   uuid_id: string | null;
+
   wsr?: WebSocketResource;
 
   constructor(
@@ -124,7 +146,6 @@ class MessageReceiverInner extends EventTarget {
     signalingKey: ArrayBuffer,
     options: {
       serverTrustRoot: string;
-      retryCached?: string;
     }
   ) {
     super();
@@ -154,9 +175,9 @@ class MessageReceiverInner extends EventTarget {
       10
     );
 
-    this.incomingQueue = new PQueue({ concurrency: 1 });
-    this.pendingQueue = new PQueue({ concurrency: 1 });
-    this.appQueue = new PQueue({ concurrency: 1 });
+    this.incomingQueue = new PQueue({ concurrency: 1, timeout: 1000 * 60 * 2 });
+    this.pendingQueue = new PQueue({ concurrency: 1, timeout: 1000 * 60 * 2 });
+    this.appQueue = new PQueue({ concurrency: 1, timeout: 1000 * 60 * 2 });
 
     this.cacheAddBatcher = createBatcher<CacheAddItemType>({
       wait: 200,
@@ -174,18 +195,19 @@ class MessageReceiverInner extends EventTarget {
       processBatch: this.cacheRemoveBatch.bind(this),
     });
 
-    if (options.retryCached) {
-      // tslint:disable-next-line no-floating-promises
-      this.pendingQueue.add(async () => this.queueAllCached());
-    }
+    // We always process our cache before any websocket message
+    this.pendingQueue.add(async () => this.queueAllCached());
   }
 
   static stringToArrayBuffer = (string: string): ArrayBuffer =>
     window.dcodeIO.ByteBuffer.wrap(string, 'binary').toArrayBuffer();
+
   static arrayBufferToString = (arrayBuffer: ArrayBuffer): string =>
     window.dcodeIO.ByteBuffer.wrap(arrayBuffer).toString('binary');
+
   static stringToArrayBufferBase64 = (string: string): ArrayBuffer =>
     window.dcodeIO.ByteBuffer.wrap(string, 'base64').toArrayBuffer();
+
   static arrayBufferToStringBase64 = (arrayBuffer: ArrayBuffer): string =>
     window.dcodeIO.ByteBuffer.wrap(arrayBuffer).toString('base64');
 
@@ -244,12 +266,9 @@ class MessageReceiverInner extends EventTarget {
 
   shutdown() {
     if (this.socket) {
-      // @ts-ignore
-      this.socket.onclose = null;
-      // @ts-ignore
-      this.socket.onerror = null;
-      // @ts-ignore
-      this.socket.onopen = null;
+      delete this.socket.onclose;
+      delete this.socket.onerror;
+      delete this.socket.onopen;
       this.socket = undefined;
     }
 
@@ -260,6 +279,7 @@ class MessageReceiverInner extends EventTarget {
       this.wsr = undefined;
     }
   }
+
   async close() {
     window.log.info('MessageReceiver.close()');
     this.calledClose = true;
@@ -274,18 +294,21 @@ class MessageReceiverInner extends EventTarget {
 
     return this.drain();
   }
+
   onopen() {
     window.log.info('websocket open');
   }
+
   onerror() {
     window.log.error('websocket error');
   }
+
   async dispatchAndWait(event: Event) {
-    // tslint:disable-next-line no-floating-promises
     this.appQueue.add(async () => Promise.all(this.dispatchEvent(event)));
 
     return Promise.resolve();
   }
+
   async onclose(ev: any) {
     window.log.info(
       'websocket closed',
@@ -316,6 +339,7 @@ class MessageReceiverInner extends EventTarget {
         return this.dispatchAndWait(event);
       });
   }
+
   handleRequest(request: IncomingWebSocketRequest) {
     // We do the message decryption here, instead of in the ordered pending queue,
     // to avoid exposing the time it took us to process messages through the time-to-ack.
@@ -325,7 +349,6 @@ class MessageReceiverInner extends EventTarget {
       request.respond(200, 'OK');
 
       if (request.verb === 'PUT' && request.path === '/api/v1/queue/empty') {
-        // tslint:disable-next-line no-floating-promises
         this.incomingQueue.add(() => {
           this.onEmpty();
         });
@@ -380,6 +403,12 @@ class MessageReceiverInner extends EventTarget {
           ? envelope.serverTimestamp.toNumber()
           : null;
 
+        // Calculate the message age (time on server).
+        envelope.messageAgeSec = this.calculateMessageAge(
+          headers,
+          envelope.serverTimestamp
+        );
+
         this.cacheAndQueue(envelope, plaintext, request);
       } catch (e) {
         request.respond(500, 'Bad encrypted websocket message');
@@ -393,9 +422,38 @@ class MessageReceiverInner extends EventTarget {
       }
     };
 
-    // tslint:disable-next-line no-floating-promises
     this.incomingQueue.add(job);
   }
+
+  calculateMessageAge(
+    headers: Array<string>,
+    serverTimestamp?: number
+  ): number {
+    let messageAgeSec = 0; // Default to 0 in case of unreliable parameters.
+
+    if (serverTimestamp) {
+      // The 'X-Signal-Timestamp' is usually the last item, so start there.
+      let it = headers.length;
+      // eslint-disable-next-line no-plusplus
+      while (--it >= 0) {
+        const match = headers[it].match(/^X-Signal-Timestamp:\s*(\d+)\s*$/);
+        if (match && match.length === 2) {
+          const timestamp = Number(match[1]);
+
+          // One final sanity check, the timestamp when a message is pulled from
+          // the server should be later than when it was pushed.
+          if (timestamp > serverTimestamp) {
+            messageAgeSec = Math.floor((timestamp - serverTimestamp) / 1000);
+          }
+
+          break;
+        }
+      }
+    }
+
+    return messageAgeSec;
+  }
+
   async addToQueue(task: () => Promise<void>) {
     this.count += 1;
 
@@ -411,6 +469,11 @@ class MessageReceiverInner extends EventTarget {
 
     return promise;
   }
+
+  hasEmptied(): boolean {
+    return Boolean(this.isEmptied);
+  }
+
   onEmpty() {
     const emitEmpty = () => {
       window.log.info("MessageReceiver: emitting 'empty' event");
@@ -427,12 +490,10 @@ class MessageReceiverInner extends EventTarget {
       );
 
       // We don't await here because we don't want this to gate future message processing
-      // tslint:disable-next-line no-floating-promises
       this.appQueue.add(emitEmpty);
     };
 
     const waitForIncomingQueue = () => {
-      // tslint:disable-next-line no-floating-promises
       this.addToQueue(waitForPendingQueue);
 
       // Note: this.count is used in addToQueue
@@ -442,13 +503,12 @@ class MessageReceiverInner extends EventTarget {
 
     const waitForCacheAddBatcher = async () => {
       await this.cacheAddBatcher.onIdle();
-      // tslint:disable-next-line no-floating-promises
       this.incomingQueue.add(waitForIncomingQueue);
     };
 
-    // tslint:disable-next-line no-floating-promises
     waitForCacheAddBatcher();
   }
+
   async drain() {
     const waitForIncomingQueue = async () =>
       this.addToQueue(async () => {
@@ -457,6 +517,7 @@ class MessageReceiverInner extends EventTarget {
 
     return this.incomingQueue.add(waitForIncomingQueue);
   }
+
   updateProgress(count: number) {
     // count by 10s
     if (count % 10 !== 0) {
@@ -466,6 +527,7 @@ class MessageReceiverInner extends EventTarget {
     ev.count = count;
     this.dispatchEvent(ev);
   }
+
   async queueAllCached() {
     const items = await this.getAllFromCache();
     const max = items.length;
@@ -474,6 +536,7 @@ class MessageReceiverInner extends EventTarget {
       await this.queueCached(items[i]);
     }
   }
+
   async queueCached(item: UnprocessedType) {
     try {
       let envelopePlaintext: ArrayBuffer;
@@ -517,10 +580,8 @@ class MessageReceiverInner extends EventTarget {
         } else {
           throw new Error('Cached decrypted value was not a string!');
         }
-        // tslint:disable-next-line no-floating-promises
         this.queueDecryptedEnvelope(envelope, payloadPlaintext);
       } else {
-        // tslint:disable-next-line no-floating-promises
         this.queueEnvelope(envelope);
       }
     } catch (error) {
@@ -544,6 +605,7 @@ class MessageReceiverInner extends EventTarget {
       }
     }
   }
+
   getEnvelopeId(envelope: EnvelopeClass) {
     if (envelope.sourceUuid || envelope.source) {
       return `${envelope.sourceUuid || envelope.source}.${
@@ -553,21 +615,23 @@ class MessageReceiverInner extends EventTarget {
 
     return envelope.id;
   }
+
   clearRetryTimeout() {
     if (this.retryCachedTimeout) {
       clearInterval(this.retryCachedTimeout);
       this.retryCachedTimeout = null;
     }
   }
+
   maybeScheduleRetryTimeout() {
     if (this.isEmptied) {
       this.clearRetryTimeout();
       this.retryCachedTimeout = setTimeout(() => {
-        // tslint:disable-next-line no-floating-promises
         this.pendingQueue.add(async () => this.queueAllCached());
       }, RETRY_TIMEOUT);
     }
   }
+
   async getAllFromCache() {
     window.log.info('getAllFromCache');
     const count = await window.textsecure.storage.unprocessed.getCount();
@@ -611,13 +675,13 @@ class MessageReceiverInner extends EventTarget {
       })
     );
   }
+
   async cacheAndQueueBatch(items: Array<CacheAddItemType>) {
     const dataArray = items.map(item => item.data);
     try {
       await window.textsecure.storage.unprocessed.batchAdd(dataArray);
       items.forEach(item => {
         item.request.respond(200, 'OK');
-        // tslint:disable-next-line no-floating-promises
         this.queueEnvelope(item.envelope);
       });
 
@@ -632,6 +696,7 @@ class MessageReceiverInner extends EventTarget {
       );
     }
   }
+
   cacheAndQueue(
     envelope: EnvelopeClass,
     plaintext: ArrayBuffer,
@@ -651,9 +716,11 @@ class MessageReceiverInner extends EventTarget {
       data,
     });
   }
+
   async cacheUpdateBatch(items: Array<Partial<UnprocessedType>>) {
     await window.textsecure.storage.unprocessed.addDecryptedDataToList(items);
   }
+
   updateCache(envelope: EnvelopeClass, plaintext: ArrayBuffer) {
     const { id } = envelope;
     const data = {
@@ -665,13 +732,16 @@ class MessageReceiverInner extends EventTarget {
     };
     this.cacheUpdateBatcher.add({ id, data });
   }
+
   async cacheRemoveBatch(items: Array<string>) {
     await window.textsecure.storage.unprocessed.remove(items);
   }
+
   removeFromCache(envelope: EnvelopeClass) {
     const { id } = envelope;
     this.cacheRemoveBatcher.add(id);
   }
+
   async queueDecryptedEnvelope(
     envelope: EnvelopeClass,
     plaintext: ArrayBuffer
@@ -693,6 +763,7 @@ class MessageReceiverInner extends EventTarget {
       );
     });
   }
+
   async queueEnvelope(envelope: EnvelopeClass) {
     const id = this.getEnvelopeId(envelope);
     window.log.info('queueing envelope', id);
@@ -718,6 +789,7 @@ class MessageReceiverInner extends EventTarget {
       }
     });
   }
+
   // Same as handleEnvelope, just without the decryption step. Necessary for handling
   //   messages which were successfully decrypted, but application logic didn't finish
   //   processing.
@@ -735,7 +807,8 @@ class MessageReceiverInner extends EventTarget {
       await this.innerHandleContentMessage(envelope, plaintext);
 
       return;
-    } else if (envelope.legacyMessage) {
+    }
+    if (envelope.legacyMessage) {
       await this.innerHandleLegacyMessage(envelope, plaintext);
 
       return;
@@ -744,6 +817,7 @@ class MessageReceiverInner extends EventTarget {
     this.removeFromCache(envelope);
     throw new Error('Received message with no content and no legacyMessage');
   }
+
   async handleEnvelope(envelope: EnvelopeClass) {
     if (this.stoppingProcessing) {
       return Promise.resolve();
@@ -755,22 +829,25 @@ class MessageReceiverInner extends EventTarget {
 
     if (envelope.content) {
       return this.handleContentMessage(envelope);
-    } else if (envelope.legacyMessage) {
+    }
+    if (envelope.legacyMessage) {
       return this.handleLegacyMessage(envelope);
     }
     this.removeFromCache(envelope);
     throw new Error('Received message with no content and no legacyMessage');
   }
+
   getStatus() {
     if (this.socket) {
       return this.socket.readyState;
-    } else if (this.hasConnected) {
+    }
+    if (this.hasConnected) {
       return WebSocket.CLOSED;
     }
     return -1;
   }
+
   async onDeliveryReceipt(envelope: EnvelopeClass) {
-    // tslint:disable-next-line promise-must-complete
     return new Promise((resolve, reject) => {
       const ev = new Event('delivery');
       ev.confirm = this.removeFromCache.bind(this, envelope);
@@ -783,6 +860,7 @@ class MessageReceiverInner extends EventTarget {
       this.dispatchAndWait(ev).then(resolve as any, reject as any);
     });
   }
+
   unpad(paddedData: ArrayBuffer) {
     const paddedPlaintext = new Uint8Array(paddedData);
     let plaintext;
@@ -801,18 +879,16 @@ class MessageReceiverInner extends EventTarget {
     return plaintext;
   }
 
-  // tslint:disable-next-line max-func-body-length
   async decrypt(
     envelope: EnvelopeClass,
     ciphertext: any
   ): Promise<ArrayBuffer> {
     const { serverTrustRoot } = this;
 
-    let address: SignalProtocolAddressClass;
     let promise;
-    const identifier = envelope.source || envelope.sourceUuid;
+    const identifier = envelope.sourceUuid || envelope.source;
 
-    address = new window.libsignal.SignalProtocolAddress(
+    const address = new window.libsignal.SignalProtocolAddress(
       // Using source as opposed to sourceUuid allows us to get the existing
       // session if we haven't yet harvested the incoming uuid
       identifier as any,
@@ -1005,6 +1081,7 @@ class MessageReceiverInner extends EventTarget {
         return this.dispatchAndWait(ev).then(returnError, returnError);
       });
   }
+
   async decryptPreKeyWhisperMessage(
     ciphertext: ArrayBuffer,
     sessionCipher: SessionCipherClass,
@@ -1028,12 +1105,14 @@ class MessageReceiverInner extends EventTarget {
       throw e;
     }
   }
+
   async handleSentMessage(
     envelope: EnvelopeClass,
     sentContainer: SyncMessageClass.Sent
   ) {
     const {
       destination,
+      destinationUuid,
       timestamp,
       message: msg,
       expirationStartTimestamp,
@@ -1045,30 +1124,24 @@ class MessageReceiverInner extends EventTarget {
       throw new Error('MessageReceiver.handleSentMessage: message was falsey!');
     }
 
-    if (msg.groupV2) {
-      window.log.warn(
-        'MessageReceiver.handleSentMessage: Dropping GroupsV2 message'
-      );
-      this.removeFromCache(envelope);
-      return;
-    }
-
     let p: Promise<any> = Promise.resolve();
     // eslint-disable-next-line no-bitwise
     if (
       msg.flags &&
       msg.flags & window.textsecure.protobuf.DataMessage.Flags.END_SESSION
     ) {
-      if (!destination) {
+      const identifier = destination || destinationUuid;
+      if (!identifier) {
         throw new Error(
           'MessageReceiver.handleSentMessage: Cannot end session with falsey destination'
         );
       }
-      p = this.handleEndSession(destination);
+      p = this.handleEndSession(identifier);
     }
     return p.then(async () =>
       this.processDecrypted(envelope, msg).then(message => {
-        const groupId = message.group && message.group.id;
+        // prettier-ignore
+        const groupId = this.getGroupId(message);
         const isBlocked = this.isGroupBlocked(groupId);
         const { source, sourceUuid } = envelope;
         const ourE164 = window.textsecure.storage.user.getNumber();
@@ -1077,7 +1150,8 @@ class MessageReceiverInner extends EventTarget {
           (source && ourE164 && source === ourE164) ||
           (sourceUuid && ourUuid && sourceUuid === ourUuid);
         const isLeavingGroup = Boolean(
-          message.group &&
+          !message.groupV2 &&
+            message.group &&
             message.group.type ===
               window.textsecure.protobuf.GroupContext.Type.QUIT
         );
@@ -1089,13 +1163,14 @@ class MessageReceiverInner extends EventTarget {
             )} ignored; destined for blocked group`
           );
           this.removeFromCache(envelope);
-          return;
+          return undefined;
         }
 
         const ev = new Event('sent');
         ev.confirm = this.removeFromCache.bind(this, envelope);
         ev.data = {
           destination,
+          destinationUuid,
           timestamp: timestamp.toNumber(),
           serverTimestamp: envelope.serverTimestamp,
           device: envelope.sourceDevice,
@@ -1110,24 +1185,19 @@ class MessageReceiverInner extends EventTarget {
       })
     );
   }
+
   async handleDataMessage(envelope: EnvelopeClass, msg: DataMessageClass) {
     window.log.info('data message from', this.getEnvelopeId(envelope));
     let p: Promise<any> = Promise.resolve();
     // eslint-disable-next-line no-bitwise
-    const destination = envelope.source || envelope.sourceUuid;
+    const destination = envelope.sourceUuid || envelope.source;
     if (!destination) {
       throw new Error(
         'MessageReceiver.handleDataMessage: source and sourceUuid were falsey'
       );
     }
 
-    if (msg.groupV2) {
-      window.log.warn(
-        'MessageReceiver.handleDataMessage: Dropping GroupsV2 message'
-      );
-      this.removeFromCache(envelope);
-      return;
-    }
+    this.deriveGroupsV2Data(msg);
 
     if (
       msg.flags &&
@@ -1135,9 +1205,26 @@ class MessageReceiverInner extends EventTarget {
     ) {
       p = this.handleEndSession(destination);
     }
+
+    if (
+      msg.flags &&
+      msg.flags &
+        window.textsecure.protobuf.DataMessage.Flags.PROFILE_KEY_UPDATE
+    ) {
+      const ev = new Event('profileKeyUpdate');
+      ev.confirm = this.removeFromCache.bind(this, envelope);
+      ev.data = {
+        source: envelope.source,
+        sourceUuid: envelope.sourceUuid,
+        profileKey: msg.profileKey.toString('base64'),
+      };
+      return this.dispatchAndWait(ev);
+    }
+
     return p.then(async () =>
       this.processDecrypted(envelope, msg).then(message => {
-        const groupId = message.group && message.group.id;
+        // prettier-ignore
+        const groupId = this.getGroupId(message);
         const isBlocked = this.isGroupBlocked(groupId);
         const { source, sourceUuid } = envelope;
         const ourE164 = window.textsecure.storage.user.getNumber();
@@ -1146,7 +1233,8 @@ class MessageReceiverInner extends EventTarget {
           (source && ourE164 && source === ourE164) ||
           (sourceUuid && ourUuid && sourceUuid === ourUuid);
         const isLeavingGroup = Boolean(
-          message.group &&
+          !message.groupV2 &&
+            message.group &&
             message.group.type ===
               window.textsecure.protobuf.GroupContext.Type.QUIT
         );
@@ -1158,7 +1246,7 @@ class MessageReceiverInner extends EventTarget {
             )} ignored; destined for blocked group`
           );
           this.removeFromCache(envelope);
-          return;
+          return undefined;
         }
 
         const ev = new Event('message');
@@ -1176,6 +1264,7 @@ class MessageReceiverInner extends EventTarget {
       })
     );
   }
+
   async handleLegacyMessage(envelope: EnvelopeClass) {
     return this.decrypt(envelope, envelope.legacyMessage).then(plaintext => {
       if (!plaintext) {
@@ -1185,6 +1274,7 @@ class MessageReceiverInner extends EventTarget {
       return this.innerHandleLegacyMessage(envelope, plaintext);
     });
   }
+
   async innerHandleLegacyMessage(
     envelope: EnvelopeClass,
     plaintext: ArrayBuffer
@@ -1192,6 +1282,7 @@ class MessageReceiverInner extends EventTarget {
     const message = window.textsecure.protobuf.DataMessage.decode(plaintext);
     return this.handleDataMessage(envelope, message);
   }
+
   async handleContentMessage(envelope: EnvelopeClass) {
     return this.decrypt(envelope, envelope.content).then(plaintext => {
       if (!plaintext) {
@@ -1201,6 +1292,7 @@ class MessageReceiverInner extends EventTarget {
       return this.innerHandleContentMessage(envelope, plaintext);
     });
   }
+
   async innerHandleContentMessage(
     envelope: EnvelopeClass,
     plaintext: ArrayBuffer
@@ -1208,26 +1300,38 @@ class MessageReceiverInner extends EventTarget {
     const content = window.textsecure.protobuf.Content.decode(plaintext);
     if (content.syncMessage) {
       return this.handleSyncMessage(envelope, content.syncMessage);
-    } else if (content.dataMessage) {
+    }
+    if (content.dataMessage) {
       return this.handleDataMessage(envelope, content.dataMessage);
-    } else if (content.nullMessage) {
+    }
+    if (content.nullMessage) {
       this.handleNullMessage(envelope);
-      return;
-    } else if (content.callMessage) {
-      this.handleCallMessage(envelope);
-      return;
-    } else if (content.receiptMessage) {
+      return undefined;
+    }
+    if (content.callingMessage) {
+      return this.handleCallingMessage(envelope, content.callingMessage);
+    }
+    if (content.receiptMessage) {
       return this.handleReceiptMessage(envelope, content.receiptMessage);
-    } else if (content.typingMessage) {
+    }
+    if (content.typingMessage) {
       return this.handleTypingMessage(envelope, content.typingMessage);
     }
     this.removeFromCache(envelope);
     throw new Error('Unsupported content message');
   }
-  handleCallMessage(envelope: EnvelopeClass) {
-    window.log.info('call message from', this.getEnvelopeId(envelope));
+
+  async handleCallingMessage(
+    envelope: EnvelopeClass,
+    callingMessage: CallingMessageClass
+  ) {
     this.removeFromCache(envelope);
+    await window.Signal.Services.calling.handleCallingMessage(
+      envelope,
+      callingMessage
+    );
   }
+
   async handleReceiptMessage(
     envelope: EnvelopeClass,
     receiptMessage: ReceiptMessageClass
@@ -1242,6 +1346,7 @@ class MessageReceiverInner extends EventTarget {
         ev.confirm = this.removeFromCache.bind(this, envelope);
         ev.deliveryReceipt = {
           timestamp: receiptMessage.timestamp[i].toNumber(),
+          envelopeTimestamp: envelope.timestamp.toNumber(),
           source: envelope.source,
           sourceUuid: envelope.sourceUuid,
           sourceDevice: envelope.sourceDevice,
@@ -1258,13 +1363,16 @@ class MessageReceiverInner extends EventTarget {
         ev.timestamp = envelope.timestamp.toNumber();
         ev.read = {
           timestamp: receiptMessage.timestamp[i].toNumber(),
-          reader: envelope.source || envelope.sourceUuid,
+          envelopeTimestamp: envelope.timestamp.toNumber(),
+          source: envelope.source,
+          sourceUuid: envelope.sourceUuid,
         };
         results.push(this.dispatchAndWait(ev));
       }
     }
     return Promise.all(results);
   }
+
   handleTypingMessage(
     envelope: EnvelopeClass,
     typingMessage: TypingMessageClass
@@ -1285,33 +1393,94 @@ class MessageReceiverInner extends EventTarget {
       }
     }
 
+    const { groupId, timestamp, action } = typingMessage;
+
     ev.sender = envelope.source;
     ev.senderUuid = envelope.sourceUuid;
     ev.senderDevice = envelope.sourceDevice;
+
+    const groupIdBuffer = groupId ? groupId.toArrayBuffer() : null;
+
     ev.typing = {
       typingMessage,
-      timestamp: typingMessage.timestamp
-        ? typingMessage.timestamp.toNumber()
-        : Date.now(),
-      groupId: typingMessage.groupId
-        ? typingMessage.groupId.toString('binary')
-        : null,
+      timestamp: timestamp ? timestamp.toNumber() : Date.now(),
+      groupId:
+        groupIdBuffer && groupIdBuffer.byteLength <= 16
+          ? groupId.toString('binary')
+          : null,
+      groupV2Id:
+        groupIdBuffer && groupIdBuffer.byteLength > 16
+          ? groupId.toString('base64')
+          : null,
       started:
-        typingMessage.action ===
-        window.textsecure.protobuf.TypingMessage.Action.STARTED,
+        action === window.textsecure.protobuf.TypingMessage.Action.STARTED,
       stopped:
-        typingMessage.action ===
-        window.textsecure.protobuf.TypingMessage.Action.STOPPED,
+        action === window.textsecure.protobuf.TypingMessage.Action.STOPPED,
     };
 
     return this.dispatchEvent(ev);
   }
+
   handleNullMessage(envelope: EnvelopeClass) {
     window.log.info('null message from', this.getEnvelopeId(envelope));
     this.removeFromCache(envelope);
   }
 
-  // tslint:disable-next-line cyclomatic-complexity
+  deriveGroupsV2Data(message: DataMessageClass) {
+    const { groupV2 } = message;
+
+    if (!groupV2) {
+      return;
+    }
+
+    if (!isNumber(groupV2.revision)) {
+      throw new Error('deriveGroupsV2Data: revision was not a number');
+    }
+    if (!groupV2.masterKey) {
+      throw new Error('deriveGroupsV2Data: had falsey masterKey');
+    }
+
+    const toBase64 = MessageReceiverInner.arrayBufferToStringBase64;
+    const masterKey: ArrayBuffer = groupV2.masterKey.toArrayBuffer();
+    const length = masterKey.byteLength;
+    if (length !== MASTER_KEY_LENGTH) {
+      throw new Error(
+        `deriveGroupsV2Data: masterKey had length ${length}, expected ${MASTER_KEY_LENGTH}`
+      );
+    }
+
+    const fields = deriveGroupFields(masterKey);
+    groupV2.masterKey = toBase64(masterKey);
+    groupV2.secretParams = toBase64(fields.secretParams);
+    groupV2.publicParams = toBase64(fields.publicParams);
+    groupV2.id = toBase64(fields.id);
+
+    if (groupV2.groupChange) {
+      groupV2.groupChange = groupV2.groupChange.toString('base64');
+    }
+  }
+
+  getGroupId(message: DataMessageClass) {
+    if (message.groupV2) {
+      return message.groupV2.id;
+    }
+    if (message.group) {
+      return message.group.id.toString('binary');
+    }
+
+    return null;
+  }
+
+  getDestination(sentMessage: SyncMessageClass.Sent) {
+    if (sentMessage.message && sentMessage.message.groupV2) {
+      return `groupv2(${sentMessage.message.groupV2.id})`;
+    }
+    if (sentMessage.message && sentMessage.message.group) {
+      return `group(${sentMessage.message.group.id.toBinary()})`;
+    }
+    return sentMessage.destination || sentMessage.destinationUuid;
+  }
+
   async handleSyncMessage(
     envelope: EnvelopeClass,
     syncMessage: SyncMessageClass
@@ -1336,7 +1505,7 @@ class MessageReceiverInner extends EventTarget {
     if (!fromSelfSource && !fromSelfSourceUuid) {
       throw new Error('Received sync message from another number');
     }
-    // tslint:disable-next-line triple-equals
+    // eslint-disable-next-line eqeqeq
     if (envelope.sourceDevice == this.deviceId) {
       throw new Error('Received sync message from our own device');
     }
@@ -1348,38 +1517,45 @@ class MessageReceiverInner extends EventTarget {
           'MessageReceiver.handleSyncMessage: sync sent message was missing message'
         );
       }
-      const to = sentMessage.message.group
-        ? `group(${sentMessage.message.group.id.toBinary()})`
-        : sentMessage.destination;
+
+      this.deriveGroupsV2Data(sentMessage.message);
 
       window.log.info(
         'sent message to',
-        to,
+        this.getDestination(sentMessage),
         sentMessage.timestamp.toNumber(),
         'from',
         this.getEnvelopeId(envelope)
       );
       return this.handleSentMessage(envelope, sentMessage);
-    } else if (syncMessage.contacts) {
+    }
+    if (syncMessage.contacts) {
       this.handleContacts(envelope, syncMessage.contacts);
-      return;
-    } else if (syncMessage.groups) {
+      return undefined;
+    }
+    if (syncMessage.groups) {
       this.handleGroups(envelope, syncMessage.groups);
-      return;
-    } else if (syncMessage.blocked) {
+      return undefined;
+    }
+    if (syncMessage.blocked) {
       return this.handleBlocked(envelope, syncMessage.blocked);
-    } else if (syncMessage.request) {
+    }
+    if (syncMessage.request) {
       window.log.info('Got SyncMessage Request');
       this.removeFromCache(envelope);
-      return;
-    } else if (syncMessage.read && syncMessage.read.length) {
+      return undefined;
+    }
+    if (syncMessage.read && syncMessage.read.length) {
       window.log.info('read messages from', this.getEnvelopeId(envelope));
       return this.handleRead(envelope, syncMessage.read);
-    } else if (syncMessage.verified) {
+    }
+    if (syncMessage.verified) {
       return this.handleVerified(envelope, syncMessage.verified);
-    } else if (syncMessage.configuration) {
+    }
+    if (syncMessage.configuration) {
       return this.handleConfiguration(envelope, syncMessage.configuration);
-    } else if (
+    }
+    if (
       syncMessage.stickerPackOperation &&
       syncMessage.stickerPackOperation.length > 0
     ) {
@@ -1387,13 +1563,27 @@ class MessageReceiverInner extends EventTarget {
         envelope,
         syncMessage.stickerPackOperation
       );
-    } else if (syncMessage.viewOnceOpen) {
+    }
+    if (syncMessage.viewOnceOpen) {
       return this.handleViewOnceOpen(envelope, syncMessage.viewOnceOpen);
+    }
+    if (syncMessage.messageRequestResponse) {
+      return this.handleMessageRequestResponse(
+        envelope,
+        syncMessage.messageRequestResponse
+      );
+    }
+    if (syncMessage.fetchLatest) {
+      return this.handleFetchLatest(envelope, syncMessage.fetchLatest);
+    }
+    if (syncMessage.keys) {
+      return this.handleKeys(envelope, syncMessage.keys);
     }
 
     this.removeFromCache(envelope);
     throw new Error('Got empty SyncMessage');
   }
+
   async handleConfiguration(
     envelope: EnvelopeClass,
     configuration: SyncMessageClass.Configuration
@@ -1404,6 +1594,7 @@ class MessageReceiverInner extends EventTarget {
     ev.configuration = configuration;
     return this.dispatchAndWait(ev);
   }
+
   async handleViewOnceOpen(
     envelope: EnvelopeClass,
     sync: SyncMessageClass.ViewOnceOpen
@@ -1424,6 +1615,54 @@ class MessageReceiverInner extends EventTarget {
 
     return this.dispatchAndWait(ev);
   }
+
+  async handleMessageRequestResponse(
+    envelope: EnvelopeClass,
+    sync: SyncMessageClass.MessageRequestResponse
+  ) {
+    window.log.info('got message request response sync message');
+
+    const ev = new Event('messageRequestResponse');
+    ev.confirm = this.removeFromCache.bind(this, envelope);
+    ev.threadE164 = sync.threadE164;
+    ev.threadUuid = sync.threadUuid;
+    ev.groupId = sync.groupId ? sync.groupId.toString('binary') : null;
+    ev.messageRequestResponseType = sync.type;
+
+    window.normalizeUuids(
+      ev,
+      ['threadUuid'],
+      'MessageReceiver::handleMessageRequestResponse'
+    );
+  }
+
+  async handleFetchLatest(
+    envelope: EnvelopeClass,
+    sync: SyncMessageClass.FetchLatest
+  ) {
+    window.log.info('got fetch latest sync message');
+
+    const ev = new Event('fetchLatest');
+    ev.confirm = this.removeFromCache.bind(this, envelope);
+    ev.eventType = sync.type;
+
+    return this.dispatchAndWait(ev);
+  }
+
+  async handleKeys(envelope: EnvelopeClass, sync: SyncMessageClass.Keys) {
+    window.log.info('got keys sync message');
+
+    if (!sync.storageService) {
+      return undefined;
+    }
+
+    const ev = new Event('keys');
+    ev.confirm = this.removeFromCache.bind(this, envelope);
+    ev.storageServiceKey = sync.storageService.toArrayBuffer();
+
+    return this.dispatchAndWait(ev);
+  }
+
   async handleStickerPackOperation(
     envelope: EnvelopeClass,
     operations: Array<SyncMessageClass.StickerPackOperation>
@@ -1441,6 +1680,7 @@ class MessageReceiverInner extends EventTarget {
     }));
     return this.dispatchAndWait(ev);
   }
+
   async handleVerified(envelope: EnvelopeClass, verified: VerifiedClass) {
     const ev = new Event('verified');
     ev.confirm = this.removeFromCache.bind(this, envelope);
@@ -1457,6 +1697,7 @@ class MessageReceiverInner extends EventTarget {
     );
     return this.dispatchAndWait(ev);
   }
+
   async handleRead(
     envelope: EnvelopeClass,
     read: Array<SyncMessageClass.Read>
@@ -1467,6 +1708,7 @@ class MessageReceiverInner extends EventTarget {
       ev.confirm = this.removeFromCache.bind(this, envelope);
       ev.timestamp = envelope.timestamp.toNumber();
       ev.read = {
+        envelopeTimestamp: envelope.timestamp.toNumber(),
         timestamp: read[i].timestamp.toNumber(),
         sender: read[i].sender,
         senderUuid: read[i].senderUuid,
@@ -1480,6 +1722,7 @@ class MessageReceiverInner extends EventTarget {
     }
     return Promise.all(results);
   }
+
   handleContacts(envelope: EnvelopeClass, contacts: SyncMessageClass.Contacts) {
     window.log.info('contact sync');
     const { blob } = contacts;
@@ -1491,7 +1734,6 @@ class MessageReceiverInner extends EventTarget {
 
     // Note: we do not return here because we don't want to block the next message on
     //   this attachment download and a lot of processing of that attachment.
-    // tslint:disable-next-line no-floating-promises
     this.handleAttachment(blob).then(async attachmentPointer => {
       const results = [];
       const contactBuffer = new ContactBuffer(attachmentPointer.data);
@@ -1499,6 +1741,11 @@ class MessageReceiverInner extends EventTarget {
       while (contactDetails !== undefined) {
         const contactEvent = new Event('contact');
         contactEvent.contactDetails = contactDetails;
+        window.normalizeUuids(
+          contactEvent,
+          ['contactDetails.verified.destinationUuid'],
+          'message_receiver::handleContacts::handleAttachment'
+        );
         results.push(this.dispatchAndWait(contactEvent));
 
         contactDetails = contactBuffer.next();
@@ -1512,6 +1759,7 @@ class MessageReceiverInner extends EventTarget {
       });
     });
   }
+
   handleGroups(envelope: EnvelopeClass, groups: SyncMessageClass.Groups) {
     window.log.info('group sync');
     const { blob } = groups;
@@ -1524,7 +1772,6 @@ class MessageReceiverInner extends EventTarget {
 
     // Note: we do not return here because we don't want to block the next message on
     //   this attachment download and a lot of processing of that attachment.
-    // tslint:disable-next-line no-floating-promises
     this.handleAttachment(blob).then(async attachmentPointer => {
       const groupBuffer = new GroupBuffer(attachmentPointer.data);
       let groupDetails = groupBuffer.next() as any;
@@ -1546,6 +1793,7 @@ class MessageReceiverInner extends EventTarget {
       });
     });
   }
+
   async handleBlocked(
     envelope: EnvelopeClass,
     blocked: SyncMessageClass.Blocked
@@ -1570,19 +1818,22 @@ class MessageReceiverInner extends EventTarget {
     await window.textsecure.storage.put('blocked-groups', groupIds);
 
     this.removeFromCache(envelope);
-    return;
   }
+
   isBlocked(number: string) {
     return window.textsecure.storage.get('blocked', []).includes(number);
   }
+
   isUuidBlocked(uuid: string) {
     return window.textsecure.storage.get('blocked-uuids', []).includes(uuid);
   }
+
   isGroupBlocked(groupId: string) {
     return window.textsecure.storage
       .get('blocked-groups', [])
       .includes(groupId);
   }
+
   cleanAttachment(attachment: AttachmentPointerClass) {
     return {
       ...omit(attachment, 'thumbnail'),
@@ -1591,7 +1842,35 @@ class MessageReceiverInner extends EventTarget {
       digest: attachment.digest ? attachment.digest.toString('base64') : null,
     };
   }
-  async downloadAttachment(attachment: AttachmentPointerClass) {
+
+  private isLinkPreviewDateValid(value: unknown): value is number {
+    return (
+      typeof value === 'number' &&
+      !Number.isNaN(value) &&
+      Number.isFinite(value) &&
+      value > 0
+    );
+  }
+
+  private cleanLinkPreviewDate(value: unknown): number | null {
+    if (this.isLinkPreviewDateValid(value)) {
+      return value;
+    }
+    if (!value) {
+      return null;
+    }
+    let result: unknown;
+    try {
+      result = (value as any).toNumber();
+    } catch (err) {
+      return null;
+    }
+    return this.isLinkPreviewDateValid(result) ? result : null;
+  }
+
+  async downloadAttachment(
+    attachment: AttachmentPointerClass
+  ): Promise<DownloadAttachmentType> {
     const encrypted = await this.server.getAttachment(
       attachment.cdnId || attachment.cdnKey,
       attachment.cdnNumber || 0
@@ -1621,12 +1900,14 @@ class MessageReceiverInner extends EventTarget {
       data,
     };
   }
+
   async handleAttachment(
     attachment: AttachmentPointerClass
-  ): Promise<AttachmentType> {
+  ): Promise<DownloadAttachmentType> {
     const cleaned = this.cleanAttachment(attachment);
     return this.downloadAttachment(cleaned);
   }
+
   async handleEndSession(identifier: string) {
     window.log.info('got end session');
     const deviceIds = await window.textsecure.storage.protocol.getDeviceIds(
@@ -1650,7 +1931,6 @@ class MessageReceiverInner extends EventTarget {
     );
   }
 
-  // tslint:disable-next-line max-func-body-length cyclomatic-complexity
   async processDecrypted(envelope: EnvelopeClass, decrypted: DataMessageClass) {
     /* eslint-disable no-bitwise, no-param-reassign */
     const FLAGS = window.textsecure.protobuf.DataMessage.Flags;
@@ -1685,7 +1965,8 @@ class MessageReceiverInner extends EventTarget {
       decrypted.attachments = [];
       decrypted.group = null;
       return Promise.resolve(decrypted);
-    } else if (decrypted.flags & FLAGS.EXPIRATION_TIMER_UPDATE) {
+    }
+    if (decrypted.flags & FLAGS.EXPIRATION_TIMER_UPDATE) {
       decrypted.body = null;
       decrypted.attachments = [];
     } else if (decrypted.flags & FLAGS.PROFILE_KEY_UPDATE) {
@@ -1710,7 +1991,6 @@ class MessageReceiverInner extends EventTarget {
         case window.textsecure.protobuf.GroupContext.Type.DELIVER:
           decrypted.group.name = null;
           decrypted.group.membersE164 = [];
-          decrypted.group.members = [];
           decrypted.group.avatar = null;
           break;
         default: {
@@ -1745,18 +2025,11 @@ class MessageReceiverInner extends EventTarget {
     decrypted.attachments = (decrypted.attachments || []).map(
       this.cleanAttachment.bind(this)
     );
-    decrypted.preview = (decrypted.preview || []).map(item => {
-      const { image } = item;
-
-      if (!image) {
-        return item;
-      }
-
-      return {
-        ...item,
-        image: this.cleanAttachment(image),
-      };
-    });
+    decrypted.preview = (decrypted.preview || []).map(item => ({
+      ...item,
+      date: this.cleanLinkPreviewDate(item.date),
+      ...(item.image ? { image: this.cleanAttachment(item.image) } : {}),
+    }));
     decrypted.contact = (decrypted.contact || []).map(item => {
       const { avatar } = item;
 
@@ -1812,17 +2085,12 @@ class MessageReceiverInner extends EventTarget {
       }
     }
 
-    const groupMembers = decrypted.group ? decrypted.group.members || [] : [];
-
-    window.normalizeUuids(
-      decrypted,
-      [
-        'quote.authorUuid',
-        'reaction.targetAuthorUuid',
-        ...groupMembers.map((_member, i) => `group.members.${i}.uuid`),
-      ],
-      'message_receiver::processDecrypted'
-    );
+    const { reaction } = decrypted;
+    if (reaction) {
+      if (reaction.targetTimestamp) {
+        reaction.targetTimestamp = reaction.targetTimestamp.toNumber();
+      }
+    }
 
     return Promise.resolve(decrypted);
     /* eslint-enable no-bitwise, no-param-reassign */
@@ -1849,11 +2117,11 @@ export default class MessageReceiver {
     );
 
     this.addEventListener = inner.addEventListener.bind(inner);
-    this.removeEventListener = inner.removeEventListener.bind(inner);
-    this.getStatus = inner.getStatus.bind(inner);
     this.close = inner.close.bind(inner);
-
     this.downloadAttachment = inner.downloadAttachment.bind(inner);
+    this.getStatus = inner.getStatus.bind(inner);
+    this.hasEmptied = inner.hasEmptied.bind(inner);
+    this.removeEventListener = inner.removeEventListener.bind(inner);
     this.stopProcessing = inner.stopProcessing.bind(inner);
     this.unregisterBatchers = inner.unregisterBatchers.bind(inner);
 
@@ -1861,19 +2129,30 @@ export default class MessageReceiver {
   }
 
   addEventListener: (name: string, handler: Function) => void;
-  removeEventListener: (name: string, handler: Function) => void;
-  getStatus: () => number;
+
   close: () => Promise<void>;
+
   downloadAttachment: (
     attachment: AttachmentPointerClass
-  ) => Promise<AttachmentType>;
+  ) => Promise<DownloadAttachmentType>;
+
+  getStatus: () => number;
+
+  hasEmptied: () => boolean;
+
+  removeEventListener: (name: string, handler: Function) => void;
+
   stopProcessing: () => Promise<void>;
+
   unregisterBatchers: () => void;
 
   static stringToArrayBuffer = MessageReceiverInner.stringToArrayBuffer;
+
   static arrayBufferToString = MessageReceiverInner.arrayBufferToString;
+
   static stringToArrayBufferBase64 =
     MessageReceiverInner.stringToArrayBufferBase64;
+
   static arrayBufferToStringBase64 =
     MessageReceiverInner.arrayBufferToStringBase64;
 }
