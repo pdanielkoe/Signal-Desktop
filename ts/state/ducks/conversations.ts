@@ -1,3 +1,4 @@
+/* eslint-disable camelcase */
 import {
   difference,
   fromPairs,
@@ -12,6 +13,7 @@ import {
 import { trigger } from '../../shims/events';
 import { NoopActionType } from './noop';
 import { AttachmentType } from '../../types/Attachment';
+import { ColorType } from '../../types/Colors';
 
 // State
 
@@ -21,34 +23,60 @@ export type DBConversationType = {
   lastMessage: string;
   type: string;
 };
+
+export type LastMessageStatus =
+  | 'error'
+  | 'partial-sent'
+  | 'sending'
+  | 'sent'
+  | 'delivered'
+  | 'read';
+
+export type ConversationTypeType = 'direct' | 'group';
+
 export type ConversationType = {
   id: string;
+  uuid?: string;
+  e164?: string;
   name?: string;
-  isArchived: boolean;
+  firstName?: string;
+  profileName?: string;
+  avatarPath?: string;
+  color?: ColorType;
+  isArchived?: boolean;
+  isBlocked?: boolean;
+  isPinned?: boolean;
+  isVerified?: boolean;
   activeAt?: number;
-  timestamp: number;
-  inboxPosition: number;
+  timestamp?: number;
+  inboxPosition?: number;
   lastMessage?: {
-    status: 'error' | 'sending' | 'sent' | 'delivered' | 'read';
+    status: LastMessageStatus;
     text: string;
   };
-  phoneNumber: string;
-  type: 'direct' | 'group';
-  isMe: boolean;
+  phoneNumber?: string;
+  membersCount?: number;
+  muteExpiresAt?: number;
+  type: ConversationTypeType;
+  isMe?: boolean;
   lastUpdated: number;
-  unreadCount: number;
-  isSelected: boolean;
+  title: string;
+  unreadCount?: number;
+  isSelected?: boolean;
   typingContact?: {
     avatarPath?: string;
-    color: string;
+    color?: ColorType;
     name?: string;
-    phoneNumber: string;
+    phoneNumber?: string;
     profileName?: string;
-  };
+  } | null;
 
   shouldShowDraft?: boolean;
-  draftText?: string;
+  draftText?: string | null;
   draftPreview?: string;
+
+  messageRequestsEnabled?: boolean;
+  acceptedMessageRequest?: boolean;
 };
 export type ConversationLookupType = {
   [key: string]: ConversationType;
@@ -63,7 +91,8 @@ export type MessageType = {
     | 'group'
     | 'keychange'
     | 'verified-change'
-    | 'message-history-unsynced';
+    | 'message-history-unsynced'
+    | 'call-history';
   quote?: { author: string };
   received_at: number;
   hasSignalAccount?: boolean;
@@ -91,7 +120,7 @@ export type MessageType = {
   deletedForEveryone?: boolean;
 
   errors?: Array<Error>;
-  group_update?: any;
+  group_update?: unknown;
 
   // No need to go beyond this; unused at this stage, since this goes into
   //   a reducer still in plain JavaScript and comes out well-formed
@@ -209,6 +238,9 @@ export type MessagesResetActionType = {
     messages: Array<MessageType>;
     metrics: MessageMetricsType;
     scrollToMessageId?: string;
+    // The set of provided messages should be trusted, even if it conflicts with metrics,
+    //   because we weren't looking for a specific time window of messages with our query.
+    unboundedFetch: boolean;
   };
 };
 export type SetMessagesLoadingActionType = {
@@ -368,7 +400,10 @@ function removeAllConversations(): RemoveAllConversationsActionType {
   };
 }
 
-function selectMessage(messageId: string, conversationId: string) {
+function selectMessage(
+  messageId: string,
+  conversationId: string
+): MessageSelectedActionType {
   return {
     type: 'MESSAGE_SELECTED',
     payload: {
@@ -424,11 +459,13 @@ function messagesReset(
   conversationId: string,
   messages: Array<MessageType>,
   metrics: MessageMetricsType,
-  scrollToMessageId?: string
+  scrollToMessageId?: string,
+  unboundedFetch?: boolean
 ): MessagesResetActionType {
   return {
     type: 'MESSAGES_RESET',
     payload: {
+      unboundedFetch: Boolean(unboundedFetch),
       conversationId,
       messages,
       metrics,
@@ -540,13 +577,13 @@ function openConversationExternal(
   };
 }
 
-function showInbox() {
+function showInbox(): ShowInboxActionType {
   return {
     type: 'SHOW_INBOX',
     payload: null,
   };
 }
-function showArchivedConversations() {
+function showArchivedConversations(): ShowArchivedConversationsActionType {
   return {
     type: 'SHOW_ARCHIVED_CONVERSATIONS',
     payload: null,
@@ -565,11 +602,10 @@ function getEmptyState(): ConversationsStateType {
   };
 }
 
-// tslint:disable-next-line cyclomatic-complexity
 function hasMessageHeightChanged(
   message: MessageType,
   previous: MessageType
-): Boolean {
+): boolean {
   const messageAttachments = message.attachments || [];
   const previousAttachments = previous.attachments || [];
 
@@ -637,7 +673,6 @@ function hasMessageHeightChanged(
   return false;
 }
 
-// tslint:disable-next-line cyclomatic-complexity max-func-body-length
 export function reducer(
   state: ConversationsStateType = getEmptyState(),
   action: ConversationActionType
@@ -660,8 +695,7 @@ export function reducer(
     const { id, data } = payload;
     const { conversationLookup } = state;
 
-    let showArchived = state.showArchived;
-    let selectedConversation = state.selectedConversation;
+    let { showArchived, selectedConversation } = state;
 
     const existing = conversationLookup[id];
     // In the change case we only modify the lookup if we already had that conversation
@@ -784,6 +818,7 @@ export function reducer(
       messages,
       metrics,
       scrollToMessageId,
+      unboundedFetch,
     } = action.payload;
     const { messagesByConversation, messagesLookup } = state;
 
@@ -807,7 +842,10 @@ export function reducer(
       }
 
       const last = messages[messages.length - 1];
-      if (last && (!newest || last.received_at >= newest.received_at)) {
+      if (
+        last &&
+        (!newest || unboundedFetch || last.received_at >= newest.received_at)
+      ) {
         newest = pick(last, ['id', 'received_at']);
       }
     }
@@ -978,6 +1016,19 @@ export function reducer(
       id
     );
 
+    let metrics;
+    if (messageIds.length === 0) {
+      metrics = {
+        totalUnread: 0,
+      };
+    } else {
+      metrics = {
+        ...existingConversation.metrics,
+        oldest,
+        newest,
+      };
+    }
+
     return {
       ...state,
       messagesLookup: omit(messagesLookup, id),
@@ -986,11 +1037,7 @@ export function reducer(
           ...existingConversation,
           messageIds,
           heightChangeMessageIds,
-          metrics: {
-            ...existingConversation.metrics,
-            oldest,
-            newest,
-          },
+          metrics,
         },
       },
     };
@@ -1047,7 +1094,8 @@ export function reducer(
       }
     }
 
-    // Update oldest and newest if we receive older/newer messages (or duplicated timestamps!)
+    // Update oldest and newest if we receive older/newer
+    // messages (or duplicated timestamps!)
     if (first && oldest && first.received_at <= oldest.received_at) {
       oldest = pick(first, ['id', 'received_at']);
     }

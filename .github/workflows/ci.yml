@@ -27,6 +27,7 @@ jobs:
     - run: yarn generate
     - run: yarn lint
     - run: yarn lint-deps
+    - run: git diff --quiet --exit-code
 
   macos:
     needs: lint
@@ -122,7 +123,7 @@ jobs:
 
     - run: yarn install --frozen-lockfile
     - run: yarn generate
-    - run: yarn lint-windows
+    - run: yarn lint
     - run: yarn lint-deps
     - run: node build\grunt.js
     - run: yarn test-node

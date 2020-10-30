@@ -1,11 +1,15 @@
-// tslint:disable no-backbone-get-set-outside-model no-default-export no-unnecessary-local-variable
+/* eslint-disable @typescript-eslint/no-explicit-any */
+/* eslint-disable @typescript-eslint/ban-types */
+/* eslint-disable more/no-then */
+/* eslint-disable class-methods-use-this */
+/* eslint-disable @typescript-eslint/explicit-module-boundary-types */
+import PQueue from 'p-queue';
 
 import EventTarget from './EventTarget';
 import { WebAPIType } from './WebAPI';
 import MessageReceiver from './MessageReceiver';
 import { KeyPairType, SignedPreKeyType } from '../libsignal.d';
 import utils from './Helpers';
-import PQueue from 'p-queue';
 import ProvisioningCipher from './ProvisioningCipher';
 import WebSocketResource, {
   IncomingWebSocketRequest,
@@ -42,7 +46,9 @@ type GeneratedKeysType = {
 
 export default class AccountManager extends EventTarget {
   server: WebAPIType;
+
   pending: Promise<void>;
+
   pendingQueue?: PQueue;
 
   constructor(username: string, password: string) {
@@ -55,9 +61,11 @@ export default class AccountManager extends EventTarget {
   async requestVoiceVerification(number: string) {
     return this.server.requestVerificationVoice(number);
   }
+
   async requestSMSVerification(number: string) {
     return this.server.requestVerificationSMS(number);
   }
+
   async encryptDeviceName(name: string, providedIdentityKey?: KeyPairType) {
     if (!name) {
       return null;
@@ -81,6 +89,7 @@ export default class AccountManager extends EventTarget {
     const arrayBuffer = proto.encode().toArrayBuffer();
     return MessageReceiver.arrayBufferToStringBase64(arrayBuffer);
   }
+
   async decryptDeviceName(base64: string) {
     const identityKey = await window.textsecure.storage.protocol.getIdentityKeyPair();
 
@@ -99,6 +108,7 @@ export default class AccountManager extends EventTarget {
 
     return name;
   }
+
   async maybeUpdateDeviceName() {
     const isNameEncrypted = window.textsecure.storage.user.getDeviceNameEncrypted();
     if (isNameEncrypted) {
@@ -111,15 +121,18 @@ export default class AccountManager extends EventTarget {
       await this.server.updateDeviceName(base64);
     }
   }
+
   async deviceNameIsEncrypted() {
     await window.textsecure.storage.user.setDeviceNameEncrypted();
   }
+
   async maybeDeleteSignalingKey() {
     const key = window.textsecure.storage.user.getSignalingKey();
     if (key) {
       await this.server.removeSignalingKey();
     }
   }
+
   async registerSingleDevice(number: string, verificationCode: string) {
     const registerKeys = this.server.registerKeys.bind(this.server);
     const createAccount = this.createAccount.bind(this);
@@ -156,7 +169,6 @@ export default class AccountManager extends EventTarget {
     );
   }
 
-  // tslint:disable-next-line max-func-body-length
   async registerSecondDevice(
     setProvisioningUrl: Function,
     confirmNumber: (number?: string) => Promise<string>,
@@ -275,6 +287,7 @@ export default class AccountManager extends EventTarget {
         })
     );
   }
+
   async refreshPreKeys() {
     const generateKeys = this.generateKeys.bind(this, 100);
     const registerKeys = this.server.registerKeys.bind(this.server);
@@ -289,6 +302,7 @@ export default class AccountManager extends EventTarget {
       })
     );
   }
+
   async rotateSignedPreKey() {
     return this.queueTask(async () => {
       const signedKeyId = window.textsecure.storage.get('signedKeyId', 1);
@@ -299,6 +313,22 @@ export default class AccountManager extends EventTarget {
       const store = window.textsecure.storage.protocol;
       const { server, cleanSignedPreKeys } = this;
 
+      const existingKeys = await store.loadSignedPreKeys();
+      existingKeys.sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+      const confirmedKeys = existingKeys.filter(key => key.confirmed);
+
+      const ONE_DAY_AGO = Date.now() - 24 * 60 * 60 * 1000;
+      if (
+        confirmedKeys.length >= 3 &&
+        confirmedKeys[0].created_at > ONE_DAY_AGO
+      ) {
+        window.log.warn(
+          'rotateSignedPreKey: 3+ confirmed keys, most recent is less than a day old. Cancelling rotation.'
+        );
+        return;
+      }
+
+      // eslint-disable-next-line consistent-return
       return store
         .getIdentityKeyPair()
         .then(
@@ -354,7 +384,6 @@ export default class AccountManager extends EventTarget {
             e.code <= 599
           ) {
             const rejections =
-              // tslint:disable-next-line restrict-plus-operands
               1 + window.textsecure.storage.get('signedKeyRotationRejected', 0);
             await window.textsecure.storage.put(
               'signedKeyRotationRejected',
@@ -367,18 +396,19 @@ export default class AccountManager extends EventTarget {
         });
     });
   }
+
   async queueTask(task: () => Promise<any>) {
     this.pendingQueue = this.pendingQueue || new PQueue({ concurrency: 1 });
     const taskWithTimeout = window.textsecure.createTaskWithTimeout(task);
 
     return this.pendingQueue.add(taskWithTimeout);
   }
+
   async cleanSignedPreKeys() {
     const MINIMUM_KEYS = 3;
     const store = window.textsecure.storage.protocol;
     return store.loadSignedPreKeys().then(async allKeys => {
-      allKeys.sort((a, b) => (a.created_at || 0) - (b.created_at || 0));
-      allKeys.reverse(); // we want the most recent first
+      allKeys.sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
       const confirmed = allKeys.filter(key => key.confirmed);
       const unconfirmed = allKeys.filter(key => !key.confirmed);
 
@@ -444,7 +474,6 @@ export default class AccountManager extends EventTarget {
     });
   }
 
-  // tslint:disable max-func-body-length
   async createAccount(
     number: string,
     verificationCode: string,
@@ -586,6 +615,7 @@ export default class AccountManager extends EventTarget {
     await window.textsecure.storage.put('regionCode', regionCode);
     await window.textsecure.storage.protocol.hydrateCaches();
   }
+
   async clearSessionsAndPreKeys() {
     const store = window.textsecure.storage.protocol;
 
@@ -596,6 +626,11 @@ export default class AccountManager extends EventTarget {
       store.clearSessionStore(),
     ]);
   }
+
+  async getGroupCredentials(startDay: number, endDay: number) {
+    return this.server.getGroupCredentials(startDay, endDay);
+  }
+
   // Takes the same object returned by generateKeys
   async confirmKeys(keys: GeneratedKeysType) {
     const store = window.textsecure.storage.protocol;
@@ -609,6 +644,7 @@ export default class AccountManager extends EventTarget {
     window.log.info('confirmKeys: confirming key', key.keyId);
     await store.storeSignedPreKey(key.keyId, key.keyPair, confirmed);
   }
+
   async generateKeys(count: number, providedProgressCallback?: Function) {
     const progressCallback =
       typeof providedProgressCallback === 'function'
@@ -676,21 +712,18 @@ export default class AccountManager extends EventTarget {
       );
     });
   }
+
   async registrationDone({ uuid, number }: { uuid?: string; number?: string }) {
     window.log.info('registration done');
 
-    const identifier = number || uuid;
-    if (!identifier) {
-      throw new Error('registrationDone: no identifier!');
+    const conversationId = window.ConversationController.ensureContactIds({
+      e164: number,
+      uuid,
+      highTrust: true,
+    });
+    if (!conversationId) {
+      throw new Error('registrationDone: no conversationId!');
     }
-
-    // Ensure that we always have a conversation for ourself
-    const conversation = await window.ConversationController.getOrCreateAndWait(
-      identifier,
-      'private'
-    );
-    conversation.updateE164(number);
-    conversation.updateUuid(uuid);
 
     window.log.info('dispatching registration event');
 
