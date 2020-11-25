@@ -1,3 +1,6 @@
+// Copyright 2020 Signal Messenger, LLC
+// SPDX-License-Identifier: AGPL-3.0-only
+
 /* global Whisper, Signal */
 
 // eslint-disable-next-line func-names
@@ -11,7 +14,7 @@
         Component: window.Signal.Components.SafetyNumberChangeDialog,
         props: {
           confirmText: options.confirmText,
-          contacts: options.contacts.map(contact => contact.cachedProps),
+          contacts: options.contacts.map(contact => contact.format()),
           i18n: window.i18n,
           onCancel: () => {
             dialog.remove();

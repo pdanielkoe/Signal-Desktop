@@ -1,3 +1,6 @@
+// Copyright 2020 Signal Messenger, LLC
+// SPDX-License-Identifier: AGPL-3.0-only
+
 import {
   WhatIsThis,
   MessageAttributesType,
@@ -8,7 +11,9 @@ import {
   LastMessageStatus,
   ConversationType,
 } from '../state/ducks/conversations';
+import { PropsData } from '../components/conversation/Message';
 import { CallbackResultType } from '../textsecure/SendMessage';
+import { ExpirationTimerOptions } from '../util/ExpirationTimerOptions';
 import { BodyRangesType } from '../types/Util';
 import { PropsDataType as GroupsV2Props } from '../components/conversation/GroupV2Change';
 import {
@@ -59,7 +64,9 @@ const { getTextWithMentions, GoogleChrome } = window.Signal.Util;
 
 const { addStickerPackReference, getMessageBySender } = window.Signal.Data;
 const { bytesFromString } = window.Signal.Crypto;
-const PLACEHOLDER_CONTACT = {
+const PLACEHOLDER_CONTACT: Pick<ConversationType, 'title' | 'type' | 'id'> = {
+  id: 'placeholder-contact',
+  type: 'direct',
   title: window.i18n('unknownContact'),
 };
 
@@ -124,8 +131,6 @@ export class MessageModel extends window.Backbone.Model<MessageAttributesType> {
   OUR_NUMBER?: string;
 
   OUR_UUID?: string;
-
-  deletedForEveryone?: boolean;
 
   isSelected?: boolean;
 
@@ -503,7 +508,8 @@ export class MessageModel extends window.Backbone.Model<MessageAttributesType> {
     }
 
     const { expireTimer, fromSync, source, sourceUuid } = timerUpdate;
-    const timespan = window.Whisper.ExpirationTimerOptions.getName(
+    const timespan = ExpirationTimerOptions.getName(
+      window.i18n,
       expireTimer || 0
     );
     const disabled = !expireTimer;
@@ -675,15 +681,17 @@ export class MessageModel extends window.Backbone.Model<MessageAttributesType> {
     if (sticker && sticker.data) {
       const { data } = sticker;
 
-      // We don't show anything if we're still loading a sticker
-      if (data.pending || !data.path) {
+      // We don't show anything if we don't have the sticker or the blurhash...
+      if (!data.blurHash && (data.pending || !data.path)) {
         return [];
       }
 
       return [
         {
           ...data,
-          url: getAbsoluteAttachmentPath(data.path),
+          // We want to show the blurhash for stickers, not the spinner
+          pending: false,
+          url: data.path ? getAbsoluteAttachmentPath(data.path) : undefined,
         },
       ];
     }
@@ -694,26 +702,26 @@ export class MessageModel extends window.Backbone.Model<MessageAttributesType> {
       .map(attachment => this.getPropsForAttachment(attachment));
   }
 
-  getPropsForMessage(): WhatIsThis {
+  // Note: interactionMode is mixed in via selectors/conversations._messageSelector
+  getPropsForMessage(): Omit<PropsData, 'interactionMode'> {
     const sourceId = this.getContactId();
     const contact = this.findAndFormatContact(sourceId);
     const contactModel = this.findContact(sourceId);
 
-    const authorColor = contactModel ? contactModel.getColor() : null;
-    const authorAvatarPath = contactModel ? contactModel.getAvatarPath() : null;
+    const authorColor = contactModel ? contactModel.getColor() : undefined;
+    const authorAvatarPath = contactModel
+      ? contactModel.getAvatarPath()
+      : undefined;
 
     const expirationLength = this.get('expireTimer') * 1000;
     const expireTimerStart = this.get('expirationStartTimestamp');
     const expirationTimestamp =
       expirationLength && expireTimerStart
         ? expireTimerStart + expirationLength
-        : null;
+        : undefined;
 
     const conversation = this.getConversation();
     const isGroup = conversation && !conversation.isPrivate();
-    const conversationAccepted = Boolean(
-      conversation && conversation.getAccepted()
-    );
     const sticker = this.get('sticker');
 
     const isTapToView = this.isTapToView();
@@ -739,7 +747,6 @@ export class MessageModel extends window.Backbone.Model<MessageAttributesType> {
       textPending: this.get('bodyPending'),
       id: this.id,
       conversationId: this.get('conversationId'),
-      conversationAccepted,
       isSticker: Boolean(sticker),
       direction: this.isIncoming() ? 'incoming' : 'outgoing',
       timestamp: this.get('sent_at'),
@@ -747,6 +754,8 @@ export class MessageModel extends window.Backbone.Model<MessageAttributesType> {
       contact: this.getPropsForEmbeddedContact(),
       canReply: this.canReply(),
       canDeleteForEveryone: this.canDeleteForEveryone(),
+      canDownload: this.canDownload(),
+      authorId: contact.id,
       authorTitle: contact.title,
       authorColor,
       authorName: contact.name,
@@ -801,7 +810,8 @@ export class MessageModel extends window.Backbone.Model<MessageAttributesType> {
   // Dependencies of prop-generation functions
   findAndFormatContact(
     identifier?: string
-  ): Partial<ConversationType> & Pick<ConversationType, 'title'> {
+  ): Partial<ConversationType> &
+    Pick<ConversationType, 'title' | 'id' | 'type'> {
     if (!identifier) {
       return PLACEHOLDER_CONTACT;
     }
@@ -824,6 +834,8 @@ export class MessageModel extends window.Backbone.Model<MessageAttributesType> {
     });
 
     return {
+      id: 'phone-only',
+      type: 'direct',
       title: phoneNumber,
       phoneNumber,
     };
@@ -839,9 +851,9 @@ export class MessageModel extends window.Backbone.Model<MessageAttributesType> {
   }
 
   // eslint-disable-next-line class-methods-use-this
-  createNonBreakingLastSeparator(text: string): string | null {
+  createNonBreakingLastSeparator(text: string): string | undefined {
     if (!text) {
-      return null;
+      return undefined;
     }
 
     const nbsp = '\xa0';
@@ -859,7 +871,7 @@ export class MessageModel extends window.Backbone.Model<MessageAttributesType> {
     return this.get('type') === 'incoming';
   }
 
-  getMessagePropStatus(): LastMessageStatus | null {
+  getMessagePropStatus(): LastMessageStatus | undefined {
     const sent = this.get('sent');
     const sentTo = this.get('sent_to') || [];
 
@@ -870,7 +882,7 @@ export class MessageModel extends window.Backbone.Model<MessageAttributesType> {
       return 'error';
     }
     if (!this.isOutgoing()) {
-      return null;
+      return undefined;
     }
 
     const readBy = this.get('read_by') || [];
@@ -1067,6 +1079,12 @@ export class MessageModel extends window.Backbone.Model<MessageAttributesType> {
     if (this.isUnsupportedMessage()) {
       return {
         text: window.i18n('message--getDescription--unsupported-message'),
+      };
+    }
+
+    if (this.get('deletedForEveryone')) {
+      return {
+        text: window.i18n('message--deletedForEveryone'),
       };
     }
 
@@ -1290,9 +1308,7 @@ export class MessageModel extends window.Backbone.Model<MessageAttributesType> {
 
       return {
         text: window.i18n('timerSetTo', [
-          window.Whisper.ExpirationTimerOptions.getAbbreviated(
-            expireTimer || 0
-          ),
+          ExpirationTimerOptions.getAbbreviated(window.i18n, expireTimer || 0),
         ]),
       };
     }
@@ -1646,11 +1662,13 @@ export class MessageModel extends window.Backbone.Model<MessageAttributesType> {
   }
 
   getSourceDevice(): string | number | undefined {
+    const sourceDevice = this.get('sourceDevice');
+
     if (this.isIncoming()) {
-      return this.get('sourceDevice');
+      return sourceDevice;
     }
 
-    return window.textsecure.storage.user.getDeviceId();
+    return sourceDevice || window.textsecure.storage.user.getDeviceId();
   }
 
   getSourceUuid(): string | undefined {
@@ -1799,17 +1817,19 @@ export class MessageModel extends window.Backbone.Model<MessageAttributesType> {
       const expiresAt = start + delta;
 
       this.set({ expires_at: expiresAt });
+
+      window.log.info('Set message expiration', {
+        start,
+        expiresAt,
+        sentAt: this.get('sent_at'),
+      });
+
       const id = this.get('id');
       if (id && !skipSave) {
         await window.Signal.Data.saveMessage(this.attributes, {
           Message: window.Whisper.Message,
         });
       }
-
-      window.log.info('Set message expiration', {
-        expiresAt,
-        sentAt: this.get('sent_at'),
-      });
     }
   }
 
@@ -1923,7 +1943,9 @@ export class MessageModel extends window.Backbone.Model<MessageAttributesType> {
         this.get('deletedForEveryoneTimestamp'),
         this.get('sent_at'),
         this.get('expireTimer'),
-        profileKey
+        profileKey,
+        undefined, // flags
+        this.get('bodyRanges')
       );
       return this.sendSyncMessageOnly(dataMessage);
     }
@@ -1941,6 +1963,7 @@ export class MessageModel extends window.Backbone.Model<MessageAttributesType> {
         previewWithData,
         stickerWithData,
         null,
+        this.get('deletedForEveryoneTimestamp'),
         this.get('sent_at'),
         this.get('expireTimer'),
         profileKey,
@@ -2009,34 +2032,50 @@ export class MessageModel extends window.Backbone.Model<MessageAttributesType> {
     return true;
   }
 
+  canDownload(): boolean {
+    const conversation = this.getConversation();
+    const isAccepted = Boolean(conversation && conversation.getAccepted());
+
+    if (this.isOutgoing()) {
+      return true;
+    }
+
+    return isAccepted;
+  }
+
   canReply(): boolean {
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-    const isAccepted = this.getConversation()!.getAccepted();
+    const conversation = this.getConversation();
     const errors = this.get('errors');
     const isOutgoing = this.get('type') === 'outgoing';
     const numDelivered = this.get('delivered');
 
-    // Case 1: We cannot reply if we have accepted the message request
-    if (!isAccepted) {
+    // Case 1: If mandatory profile sharing is enabled, and we haven't shared yet, then
+    //   we can't reply.
+    if (conversation?.isMissingRequiredProfileSharing()) {
       return false;
     }
 
-    // Case 2: We cannot reply if this message is deleted for everyone
+    // Case 2: We cannot reply if we have accepted the message request
+    if (!conversation?.getAccepted()) {
+      return false;
+    }
+
+    // Case 3: We cannot reply if this message is deleted for everyone
     if (this.get('deletedForEveryone')) {
       return false;
     }
 
-    // Case 3: We can reply if this is outgoing and delievered to at least one recipient
+    // Case 4: We can reply if this is outgoing and delievered to at least one recipient
     if (isOutgoing && numDelivered > 0) {
       return true;
     }
 
-    // Case 4: We can reply if there are no errors
+    // Case 5: We can reply if there are no errors
     if (!errors || (errors && errors.length === 0)) {
       return true;
     }
 
-    // Case 5: default
+    // Case 6: default
     return false;
   }
 
@@ -2076,9 +2115,12 @@ export class MessageModel extends window.Backbone.Model<MessageAttributesType> {
         previewWithData,
         stickerWithData,
         null,
+        this.get('deletedForEveryoneTimestamp'),
         this.get('sent_at'),
         this.get('expireTimer'),
-        profileKey
+        profileKey,
+        undefined, // flags
+        this.get('bodyRanges')
       );
       return this.sendSyncMessageOnly(dataMessage);
     }
@@ -2155,17 +2197,23 @@ export class MessageModel extends window.Backbone.Model<MessageAttributesType> {
         this.trigger('sent', this);
         this.sendSyncMessage();
       })
-      .catch(result => {
+      .catch((result: CustomError | CallbackResultType) => {
         this.trigger('done');
 
-        if (result.dataMessage) {
+        if ('dataMessage' in result && result.dataMessage) {
           this.set({ dataMessage: result.dataMessage });
         }
 
         let promises = [];
 
         // If we successfully sent to a user, we can remove our unregistered flag.
-        result.successfulIdentifiers.forEach((identifier: string) => {
+        let successfulIdentifiers: Array<string>;
+        if ('successfulIdentifiers' in result) {
+          ({ successfulIdentifiers = [] } = result);
+        } else {
+          successfulIdentifiers = [];
+        }
+        successfulIdentifiers.forEach((identifier: string) => {
           const c = window.ConversationController.get(identifier);
           if (c && c.isEverUnregistered()) {
             c.setRegistered();
@@ -2185,7 +2233,7 @@ export class MessageModel extends window.Backbone.Model<MessageAttributesType> {
             promises.push(c.getProfiles());
           }
         } else {
-          if (result.successfulIdentifiers.length > 0) {
+          if (successfulIdentifiers.length > 0) {
             const sentTo = this.get('sent_to') || [];
 
             // If we just found out that we couldn't send to a user because they are no
@@ -2229,7 +2277,7 @@ export class MessageModel extends window.Backbone.Model<MessageAttributesType> {
               unidentifiedDeliveries: result.unidentifiedDeliveries,
             });
             promises.push(this.sendSyncMessage());
-          } else {
+          } else if (result.errors) {
             this.saveErrors(result.errors);
           }
           promises = promises.concat(
@@ -2403,7 +2451,19 @@ export class MessageModel extends window.Backbone.Model<MessageAttributesType> {
     );
     const attachments = await Promise.all(
       normalAttachments.map((attachment, index) => {
+        if (!attachment) {
+          return attachment;
+        }
+        // We've already downloaded this!
+        if (attachment.path) {
+          window.log.info(
+            `Normal attachment already downloaded for message ${this.idForLogging()}`
+          );
+          return attachment;
+        }
+
         count += 1;
+
         return window.Signal.AttachmentDownloads.addJob<
           typeof window.WhatIsThis
         >(attachment, {
@@ -2423,6 +2483,13 @@ export class MessageModel extends window.Backbone.Model<MessageAttributesType> {
     const preview = await Promise.all(
       previewsToQueue.map(async (item, index) => {
         if (!item.image) {
+          return item;
+        }
+        // We've already downloaded this!
+        if (item.image.path) {
+          window.log.info(
+            `Preview attachment already downloaded for message ${this.idForLogging()}`
+          );
           return item;
         }
 
@@ -2447,6 +2514,13 @@ export class MessageModel extends window.Backbone.Model<MessageAttributesType> {
     const contact = await Promise.all(
       contactsToQueue.map(async (item, index) => {
         if (!item.avatar || !item.avatar.avatar) {
+          return item;
+        }
+        // We've already downloaded this!
+        if (item.avatar.avatar.path) {
+          window.log.info(
+            `Contact attachment already downloaded for message ${this.idForLogging()}`
+          );
           return item;
         }
 
@@ -2482,9 +2556,14 @@ export class MessageModel extends window.Backbone.Model<MessageAttributesType> {
         ...quote,
         attachments: await Promise.all(
           (quote.attachments || []).map(async (item, index) => {
-            // If we already have a path, then we copied this image from the quoted
-            //    message and we don't need to download the attachment.
-            if (!item.thumbnail || item.thumbnail.path) {
+            if (!item.thumbnail) {
+              return item;
+            }
+            // We've already downloaded this!
+            if (item.thumbnail.path) {
+              window.log.info(
+                `Quote attachment already downloaded for message ${this.idForLogging()}`
+              );
               return item;
             }
 
@@ -2507,7 +2586,11 @@ export class MessageModel extends window.Backbone.Model<MessageAttributesType> {
 
     // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
     let sticker = this.get('sticker')!;
-    if (sticker) {
+    if (sticker && sticker.data && sticker.data.path) {
+      window.log.info(
+        `Sticker attachment already downloaded for message ${this.idForLogging()}`
+      );
+    } else if (sticker) {
       window.log.info(
         `Queueing sticker download for message ${this.idForLogging()}`
       );
@@ -3309,16 +3392,18 @@ export class MessageModel extends window.Backbone.Model<MessageAttributesType> {
 
         // Does this message have any pending, previously-received associated reactions?
         const reactions = window.Whisper.Reactions.forMessage(message);
-        reactions.forEach(reaction => {
-          message.handleReaction(reaction, false);
-        });
+        await Promise.all(
+          reactions.map(reaction => message.handleReaction(reaction, false))
+        );
 
         // Does this message have any pending, previously-received associated
         // delete for everyone messages?
         const deletes = window.Whisper.Deletes.forMessage(message);
-        deletes.forEach(del => {
-          window.Signal.Util.deleteForEveryone(message, del, false);
-        });
+        await Promise.all(
+          deletes.map(del =>
+            window.Signal.Util.deleteForEveryone(message, del, false)
+          )
+        );
 
         await window.Signal.Data.saveMessage(message.attributes, {
           Message: window.Whisper.Message,

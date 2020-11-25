@@ -1,7 +1,10 @@
+// Copyright 2020 Signal Messenger, LLC
+// SPDX-License-Identifier: AGPL-3.0-only
+
 import * as Backbone from 'backbone';
 
 import { GroupV2ChangeType } from './groups';
-import { LocalizerType, BodyRangesType } from './types/Util';
+import { LocalizerType, BodyRangeType, BodyRangesType } from './types/Util';
 import { CallHistoryDetailsType } from './types/Calling';
 import { ColorType } from './types/Colors';
 import {
@@ -84,7 +87,7 @@ export type MessageAttributesType = {
     referencedMessageNotFound: boolean;
     text: string;
   } | null;
-  reactions: Array<{ fromId: string; emoji: unknown; timestamp: unknown }>;
+  reactions: Array<{ fromId: string; emoji: string; timestamp: number }>;
   read_by: Array<string | null>;
   requiredProtocolVersion: number;
   sent: boolean;
@@ -141,14 +144,16 @@ export type ConversationAttributesType = {
   accessKey: string | null;
   addedBy?: string;
   capabilities: { uuid: string };
-  color?: ColorType;
+  color?: string;
   discoveredUnregisteredAt: number;
   draftAttachments: Array<unknown>;
+  draftBodyRanges: Array<BodyRangeType>;
   draftTimestamp: number | null;
   inbox_position: number;
   isPinned: boolean;
-  lastMessageDeletedForEveryone: unknown;
+  lastMessageDeletedForEveryone: boolean;
   lastMessageStatus: LastMessageStatus | null;
+  markedUnread: boolean;
   messageCount: number;
   messageCountBeforeMessageRequests: number;
   messageRequestResponseType: number;

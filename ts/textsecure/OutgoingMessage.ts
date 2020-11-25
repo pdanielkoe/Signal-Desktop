@@ -1,3 +1,6 @@
+// Copyright 2020 Signal Messenger, LLC
+// SPDX-License-Identifier: AGPL-3.0-only
+
 /* eslint-disable guard-for-in */
 /* eslint-disable no-restricted-syntax */
 /* eslint-disable class-methods-use-this */
@@ -14,6 +17,7 @@ import {
   CallbackResultType,
   SendMetadataType,
   SendOptionsType,
+  CustomError,
 } from './SendMessage';
 import {
   OutgoingIdentityKeyError,
@@ -44,18 +48,13 @@ export default class OutgoingMessage {
 
   identifiersCompleted: number;
 
-  errors: Array<unknown>;
+  errors: Array<CustomError>;
 
   successfulIdentifiers: Array<unknown>;
 
   failoverIdentifiers: Array<unknown>;
 
   unidentifiedDeliveries: Array<unknown>;
-
-  discoveredIdentifierPairs: Array<{
-    e164: string;
-    uuid: string;
-  }>;
 
   sendMetadata?: SendMetadataType;
 
@@ -92,7 +91,6 @@ export default class OutgoingMessage {
     this.successfulIdentifiers = [];
     this.failoverIdentifiers = [];
     this.unidentifiedDeliveries = [];
-    this.discoveredIdentifierPairs = [];
 
     const { sendMetadata, senderCertificate, online } = options;
     this.sendMetadata = sendMetadata;
@@ -108,12 +106,17 @@ export default class OutgoingMessage {
         failoverIdentifiers: this.failoverIdentifiers,
         errors: this.errors,
         unidentifiedDeliveries: this.unidentifiedDeliveries,
-        discoveredIdentifierPairs: this.discoveredIdentifierPairs,
       });
     }
   }
 
-  registerError(identifier: string, reason: string, error?: Error): void {
+  registerError(
+    identifier: string,
+    reason: string,
+    providedError?: Error
+  ): void {
+    let error = providedError;
+
     if (!error || (error.name === 'HTTPError' && error.code !== 404)) {
       error = new OutgoingMessageError(
         identifier,
@@ -124,6 +127,8 @@ export default class OutgoingMessage {
     }
 
     error.reason = reason;
+    error.stackForLog = providedError ? providedError.stack : undefined;
+
     this.errors[this.errors.length] = error;
     this.numberCompleted();
   }
@@ -612,9 +617,10 @@ export default class OutgoingMessage {
             ]);
             const uuid = lookup[identifier];
             if (uuid) {
-              this.discoveredIdentifierPairs.push({
+              window.ConversationController.ensureContactIds({
                 uuid,
                 e164: identifier,
+                highTrust: true,
               });
               identifier = uuid;
             } else {

@@ -1,3 +1,6 @@
+// Copyright 2020 Signal Messenger, LLC
+// SPDX-License-Identifier: AGPL-3.0-only
+
 /* eslint-disable @typescript-eslint/ban-types */
 /* eslint-disable no-bitwise */
 /* eslint-disable class-methods-use-this */
@@ -55,7 +58,7 @@ declare global {
     eventType?: string | number;
     groupDetails?: any;
     groupId?: string;
-    messageRequestResponseType?: number;
+    messageRequestResponseType?: number | null;
     proto?: any;
     read?: any;
     reason?: any;
@@ -65,8 +68,8 @@ declare global {
     source?: any;
     sourceUuid?: any;
     stickerPacks?: any;
-    threadE164?: string;
-    threadUuid?: string;
+    threadE164?: string | null;
+    threadUuid?: string | null;
     storageServiceKey?: ArrayBuffer;
     timestamp?: any;
     typing?: any;
@@ -74,6 +77,7 @@ declare global {
   }
   interface Error {
     reason?: any;
+    stackForLog?: string;
     sender?: SignalProtocolAddressClass;
     senderUuid?: SignalProtocolAddressClass;
   }
@@ -194,9 +198,6 @@ class MessageReceiverInner extends EventTarget {
       maxSize: 30,
       processBatch: this.cacheRemoveBatch.bind(this),
     });
-
-    // We always process our cache before any websocket message
-    this.pendingQueue.add(async () => this.queueAllCached());
   }
 
   static stringToArrayBuffer = (string: string): ArrayBuffer =>
@@ -215,6 +216,9 @@ class MessageReceiverInner extends EventTarget {
     if (this.calledClose) {
       return;
     }
+
+    // We always process our cache before processing a new websocket message
+    this.pendingQueue.add(async () => this.queueAllCached());
 
     this.count = 0;
     if (this.hasConnected) {
