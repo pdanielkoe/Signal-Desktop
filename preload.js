@@ -1,3 +1,6 @@
+// Copyright 2017-2020 Signal Messenger, LLC
+// SPDX-License-Identifier: AGPL-3.0-only
+
 /* global Whisper, window */
 
 /* eslint-disable global-require, no-inner-declarations */
@@ -12,6 +15,8 @@ try {
   const { remote } = electron;
   const { app } = remote;
   const { nativeTheme } = remote.require('electron');
+
+  window.GROUP_CALLING = true;
 
   window.PROTO_ROOT = 'protos';
   const config = require('url').parse(window.location.toString(), true).query;
@@ -362,8 +367,8 @@ try {
     directoryEnclaveId: config.directoryEnclaveId,
     directoryTrustAnchor: config.directoryTrustAnchor,
     cdnUrlObject: {
-      '0': config.cdnUrl0,
-      '2': config.cdnUrl2,
+      0: config.cdnUrl0,
+      2: config.cdnUrl2,
     },
     certificateAuthority: config.certificateAuthority,
     contentProxyUrl: config.contentProxyUrl,
@@ -544,7 +549,8 @@ try {
     );
     const link = e.target.closest('a');
     const selection = Boolean(window.getSelection().toString());
-    if (!editable && !selection && !link) {
+    const image = e.target.closest('.module-lightbox img');
+    if (!editable && !selection && !link && !image) {
       e.preventDefault();
     }
   });
@@ -558,7 +564,11 @@ try {
     };
 
     /* eslint-disable global-require, import/no-extraneous-dependencies */
+    require('./ts/test-electron/models/messages_test');
     require('./ts/test-electron/linkPreviews/linkPreviewFetch_test');
+    require('./ts/test-electron/state/ducks/conversations_test');
+    require('./ts/test-electron/state/ducks/calling_test');
+    require('./ts/test-electron/state/selectors/calling_test');
 
     delete window.describe;
 

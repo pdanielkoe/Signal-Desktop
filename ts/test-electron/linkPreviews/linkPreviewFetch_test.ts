@@ -1,3 +1,6 @@
+// Copyright 2020 Signal Messenger, LLC
+// SPDX-License-Identifier: AGPL-3.0-only
+
 import { assert } from 'chai';
 import * as sinon from 'sinon';
 import * as fs from 'fs';
@@ -776,7 +779,9 @@ describe('link preview fetching', () => {
       sinon.assert.notCalled(shouldNeverBeCalled);
     });
 
-    it('stops reading bodies after 500 kilobytes', async () => {
+    it('stops reading bodies after 500 kilobytes', async function test() {
+      this.timeout(10000);
+
       const shouldNeverBeCalled = sinon.stub();
 
       const fakeFetch = stub().resolves(

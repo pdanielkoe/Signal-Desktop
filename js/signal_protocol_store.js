@@ -1,10 +1,13 @@
+// Copyright 2016-2020 Signal Messenger, LLC
+// SPDX-License-Identifier: AGPL-3.0-only
+
 /* global
    dcodeIO, Backbone, _, libsignal, textsecure, ConversationController, stringObject */
 
 /* eslint-disable no-proto */
 
 // eslint-disable-next-line func-names
-(function() {
+(function () {
   const TIMESTAMP_THRESHOLD = 5 * 1000; // 5 seconds
   const Direction = {
     SENDING: 1,

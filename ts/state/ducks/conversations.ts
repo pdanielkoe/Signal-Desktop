@@ -1,3 +1,6 @@
+// Copyright 2019-2020 Signal Messenger, LLC
+// SPDX-License-Identifier: AGPL-3.0-only
+
 /* eslint-disable camelcase */
 import {
   difference,
@@ -14,6 +17,8 @@ import { trigger } from '../../shims/events';
 import { NoopActionType } from './noop';
 import { AttachmentType } from '../../types/Attachment';
 import { ColorType } from '../../types/Colors';
+import { BodyRangeType } from '../../types/Util';
+import { CallMode } from '../../types/Calling';
 
 // State
 
@@ -42,7 +47,11 @@ export type ConversationType = {
   firstName?: string;
   profileName?: string;
   avatarPath?: string;
+  areWeAdmin?: boolean;
+  areWePending?: boolean;
+  canChangeTimer?: boolean;
   color?: ColorType;
+  isAccepted?: boolean;
   isArchived?: boolean;
   isBlocked?: boolean;
   isPinned?: boolean;
@@ -50,16 +59,21 @@ export type ConversationType = {
   activeAt?: number;
   timestamp?: number;
   inboxPosition?: number;
+  left?: boolean;
   lastMessage?: {
     status: LastMessageStatus;
     text: string;
+    deletedForEveryone?: boolean;
   };
+  markedUnread?: boolean;
   phoneNumber?: string;
   membersCount?: number;
+  expireTimer?: number;
+  members?: Array<ConversationType>;
   muteExpiresAt?: number;
   type: ConversationTypeType;
   isMe?: boolean;
-  lastUpdated: number;
+  lastUpdated?: number;
   title: string;
   unreadCount?: number;
   isSelected?: boolean;
@@ -73,10 +87,17 @@ export type ConversationType = {
 
   shouldShowDraft?: boolean;
   draftText?: string | null;
+  draftBodyRanges?: Array<BodyRangeType>;
   draftPreview?: string;
 
+  sharedGroupNames?: Array<string>;
+  groupVersion?: 1 | 2;
+  groupId?: string;
+  isMissingMandatoryProfileSharing?: boolean;
   messageRequestsEnabled?: boolean;
   acceptedMessageRequest?: boolean;
+  secretParams?: string;
+  publicParams?: string;
 };
 export type ConversationLookupType = {
   [key: string]: ConversationType;
@@ -95,12 +116,14 @@ export type MessageType = {
     | 'call-history';
   quote?: { author: string };
   received_at: number;
+  sent_at?: number;
   hasSignalAccount?: boolean;
   bodyPending?: boolean;
   attachments: Array<AttachmentType>;
   sticker: {
     data?: {
-      pending: boolean;
+      pending?: boolean;
+      blurHash?: string;
     };
   };
   unread: boolean;
@@ -161,11 +184,37 @@ export type ConversationsStateType = {
   selectedConversation?: string;
   selectedMessage?: string;
   selectedMessageCounter: number;
+  selectedConversationPanelDepth: number;
   showArchived: boolean;
 
   // Note: it's very important that both of these locations are always kept up to date
   messagesLookup: MessageLookupType;
   messagesByConversation: MessagesByConversationType;
+};
+
+// Helpers
+
+export const getConversationCallMode = (
+  conversation: ConversationType
+): CallMode => {
+  if (
+    conversation.left ||
+    conversation.isBlocked ||
+    conversation.isMe ||
+    !conversation.acceptedMessageRequest
+  ) {
+    return CallMode.None;
+  }
+
+  if (conversation.type === 'direct') {
+    return CallMode.Direct;
+  }
+
+  if (conversation.type === 'group' && conversation.groupVersion === 2) {
+    return CallMode.Group;
+  }
+
+  return CallMode.None;
 };
 
 // Actions
@@ -264,6 +313,10 @@ export type SetIsNearBottomActionType = {
     isNearBottom: boolean;
   };
 };
+export type SetSelectedConversationPanelDepthActionType = {
+  type: 'SET_SELECTED_CONVERSATION_PANEL_DEPTH';
+  payload: { panelDepth: number };
+};
 export type ScrollToMessageActionType = {
   type: 'SCROLL_TO_MESSAGE';
   payload: {
@@ -321,6 +374,7 @@ export type ConversationActionType =
   | ClearSelectedMessageActionType
   | ClearUnreadMetricsActionType
   | ScrollToMessageActionType
+  | SetSelectedConversationPanelDepthActionType
   | SelectedConversationChangedActionType
   | MessageDeletedActionType
   | SelectedConversationChangedActionType
@@ -343,6 +397,7 @@ export const actions = {
   setMessagesLoading,
   setLoadCountdownStart,
   setIsNearBottom,
+  setSelectedConversationPanelDepth,
   clearChangedMessages,
   clearSelectedMessage,
   clearUnreadMetrics,
@@ -509,6 +564,14 @@ function setIsNearBottom(
     },
   };
 }
+function setSelectedConversationPanelDepth(
+  panelDepth: number
+): SetSelectedConversationPanelDepthActionType {
+  return {
+    type: 'SET_SELECTED_CONVERSATION_PANEL_DEPTH',
+    payload: { panelDepth },
+  };
+}
 function clearChangedMessages(
   conversationId: string
 ): ClearChangedMessagesActionType {
@@ -599,6 +662,7 @@ function getEmptyState(): ConversationsStateType {
     messagesLookup: {},
     selectedMessageCounter: 0,
     showArchived: false,
+    selectedConversationPanelDepth: 0,
   };
 }
 
@@ -629,6 +693,7 @@ function hasMessageHeightChanged(
     message.sticker.data &&
     previous.sticker &&
     previous.sticker.data &&
+    !previous.sticker.data.blurHash &&
     previous.sticker.data.pending !== message.sticker.data.pending;
   if (stickerPendingChanged) {
     return true;
@@ -754,12 +819,19 @@ export function reducer(
     return {
       ...state,
       selectedConversation,
+      selectedConversationPanelDepth: 0,
       messagesLookup: omit(state.messagesLookup, messageIds),
       messagesByConversation: omit(state.messagesByConversation, [id]),
     };
   }
   if (action.type === 'CONVERSATIONS_REMOVE_ALL') {
     return getEmptyState();
+  }
+  if (action.type === 'SET_SELECTED_CONVERSATION_PANEL_DEPTH') {
+    return {
+      ...state,
+      selectedConversationPanelDepth: action.payload.panelDepth,
+    };
   }
   if (action.type === 'MESSAGE_SELECTED') {
     const { messageId, conversationId } = action.payload;
@@ -827,7 +899,11 @@ export function reducer(
       ? existingConversation.resetCounter + 1
       : 0;
 
-    const sorted = orderBy(messages, ['received_at'], ['ASC']);
+    const sorted = orderBy(
+      messages,
+      ['received_at', 'sent_at'],
+      ['ASC', 'ASC']
+    );
     const messageIds = sorted.map(message => message.id);
 
     const lookup = fromPairs(messages.map(message => [message.id, message]));
@@ -1069,7 +1145,11 @@ export function reducer(
       lookup[message.id] = message;
     });
 
-    const sorted = orderBy(values(lookup), ['received_at'], ['ASC']);
+    const sorted = orderBy(
+      values(lookup),
+      ['received_at', 'sent_at'],
+      ['ASC', 'ASC']
+    );
     const messageIds = sorted.map(message => message.id);
 
     const first = sorted[0];

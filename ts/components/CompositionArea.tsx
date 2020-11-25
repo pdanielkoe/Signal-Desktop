@@ -1,5 +1,7 @@
+// Copyright 2019-2020 Signal Messenger, LLC
+// SPDX-License-Identifier: AGPL-3.0-only
+
 import * as React from 'react';
-import { Editor } from 'draft-js';
 import { get, noop } from 'lodash';
 import classNames from 'classnames';
 import { EmojiButton, Props as EmojiButtonProps } from './emoji/EmojiButton';
@@ -16,12 +18,16 @@ import {
   MessageRequestActions,
   Props as MessageRequestActionsProps,
 } from './conversation/MessageRequestActions';
+import { MandatoryProfileSharingActions } from './conversation/MandatoryProfileSharingActions';
 import { countStickers } from './stickers/lib';
 import { LocalizerType } from '../types/Util';
 import { EmojiPickDataType } from './emoji/EmojiPicker';
 
 export type OwnProps = {
   readonly i18n: LocalizerType;
+  readonly areWePending?: boolean;
+  readonly groupVersion?: 1 | 2;
+  readonly isMissingMandatoryProfileSharing?: boolean;
   readonly messageRequestsEnabled?: boolean;
   readonly acceptedMessageRequest?: boolean;
   readonly compositionApi?: React.MutableRefObject<{
@@ -42,11 +48,12 @@ export type OwnProps = {
 
 export type Props = Pick<
   CompositionInputProps,
+  | 'members'
   | 'onSubmit'
-  | 'onEditorSizeChange'
   | 'onEditorStateChange'
   | 'onTextTooLong'
-  | 'startingText'
+  | 'draftText'
+  | 'draftBodyRanges'
   | 'clearQuotedMessage'
   | 'getQuotedMessage'
 > &
@@ -86,12 +93,13 @@ export const CompositionArea = ({
   // CompositionInput
   onSubmit,
   compositionApi,
-  onEditorSizeChange,
   onEditorStateChange,
   onTextTooLong,
-  startingText,
+  draftText,
+  draftBodyRanges,
   clearQuotedMessage,
   getQuotedMessage,
+  members,
   // EmojiButton
   onPickEmoji,
   onSetSkinTone,
@@ -112,8 +120,11 @@ export const CompositionArea = ({
   clearShowPickerHint,
   // Message Requests
   acceptedMessageRequest,
+  areWePending,
   conversationType,
+  groupVersion,
   isBlocked,
+  isMissingMandatoryProfileSharing,
   messageRequestsEnabled,
   name,
   onAccept,
@@ -126,11 +137,10 @@ export const CompositionArea = ({
   title,
 }: Props): JSX.Element => {
   const [disabled, setDisabled] = React.useState(false);
-  const [showMic, setShowMic] = React.useState(!startingText);
+  const [showMic, setShowMic] = React.useState(!draftText);
   const [micActive, setMicActive] = React.useState(false);
   const [dirty, setDirty] = React.useState(false);
   const [large, setLarge] = React.useState(false);
-  const editorRef = React.useRef<Editor>(null);
   const inputApiRef = React.useRef<InputApi | undefined>();
 
   const handleForceSend = React.useCallback(() => {
@@ -149,10 +159,10 @@ export const CompositionArea = ({
   );
 
   const focusInput = React.useCallback(() => {
-    if (editorRef.current) {
-      editorRef.current.focus();
+    if (inputApiRef.current) {
+      inputApiRef.current.focus();
     }
-  }, [editorRef]);
+  }, [inputApiRef]);
 
   const withStickers =
     countStickers({
@@ -326,7 +336,11 @@ export const CompositionArea = ({
     };
   }, [setLarge]);
 
-  if ((!acceptedMessageRequest || isBlocked) && messageRequestsEnabled) {
+  if (
+    isBlocked ||
+    areWePending ||
+    (messageRequestsEnabled && !acceptedMessageRequest)
+  ) {
     return (
       <MessageRequestActions
         i18n={i18n}
@@ -335,6 +349,28 @@ export const CompositionArea = ({
         onBlock={onBlock}
         onBlockAndDelete={onBlockAndDelete}
         onUnblock={onUnblock}
+        onDelete={onDelete}
+        onAccept={onAccept}
+        name={name}
+        profileName={profileName}
+        phoneNumber={phoneNumber}
+        title={title}
+      />
+    );
+  }
+
+  // If no message request, but we haven't shared profile yet, we show profile-sharing UI
+  if (
+    (conversationType === 'direct' ||
+      (conversationType === 'group' && groupVersion === 1)) &&
+    isMissingMandatoryProfileSharing
+  ) {
+    return (
+      <MandatoryProfileSharingActions
+        i18n={i18n}
+        conversationType={conversationType}
+        onBlock={onBlock}
+        onBlockAndDelete={onBlockAndDelete}
         onDelete={onDelete}
         onAccept={onAccept}
         name={name}
@@ -381,18 +417,18 @@ export const CompositionArea = ({
             i18n={i18n}
             disabled={disabled}
             large={large}
-            editorRef={editorRef}
             inputApi={inputApiRef}
             onPickEmoji={onPickEmoji}
             onSubmit={handleSubmit}
-            onEditorSizeChange={onEditorSizeChange}
             onEditorStateChange={onEditorStateChange}
             onTextTooLong={onTextTooLong}
             onDirtyChange={setDirty}
             skinTone={skinTone}
-            startingText={startingText}
+            draftText={draftText}
+            draftBodyRanges={draftBodyRanges}
             clearQuotedMessage={clearQuotedMessage}
             getQuotedMessage={getQuotedMessage}
+            members={members}
           />
         </div>
         {!large ? (

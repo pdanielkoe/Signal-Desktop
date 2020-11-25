@@ -1,10 +1,13 @@
+// Copyright 2020 Signal Messenger, LLC
+// SPDX-License-Identifier: AGPL-3.0-only
+
 import { assert } from 'chai';
 
 import { combineNames } from '../../util/combineNames';
 
 describe('combineNames', () => {
-  it('returns null if no names provided', () => {
-    assert.strictEqual(combineNames('', ''), null);
+  it('returns undefined if no names provided', () => {
+    assert.strictEqual(combineNames('', ''), undefined);
   });
 
   it('returns first name only if family name not provided', () => {

@@ -1,3 +1,6 @@
+// Copyright 2017-2020 Signal Messenger, LLC
+// SPDX-License-Identifier: AGPL-3.0-only
+
 /* eslint-disable no-console */
 
 const path = require('path');
@@ -550,10 +553,6 @@ function openReleaseNotes() {
   );
 }
 
-function openGithub() {
-  shell.openExternal('https://github.com/signalapp/Signal-Desktop');
-}
-
 function openSupportPage() {
   // If we omit the language, the site will detect the language and redirect
   shell.openExternal('https://support.signal.org/hc/sections/360001602812');
@@ -1031,7 +1030,6 @@ function setupMenu(options) {
     showSettings: showSettingsWindow,
     showStickerCreator,
     openContactUs,
-    openGithub,
     openJoinTheBeta,
     openReleaseNotes,
     openSupportPage,

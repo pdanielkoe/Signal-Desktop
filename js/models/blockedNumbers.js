@@ -1,7 +1,10 @@
+// Copyright 2016-2020 Signal Messenger, LLC
+// SPDX-License-Identifier: AGPL-3.0-only
+
 /* global storage, _ */
 
 // eslint-disable-next-line func-names
-(function() {
+(function () {
   const BLOCKED_NUMBERS_ID = 'blocked';
   const BLOCKED_UUIDS_ID = 'blocked-uuids';
   const BLOCKED_GROUPS_ID = 'blocked-groups';

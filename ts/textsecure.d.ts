@@ -1,3 +1,6 @@
+// Copyright 2020 Signal Messenger, LLC
+// SPDX-License-Identifier: AGPL-3.0-only
+
 import {
   KeyPairType,
   SessionRecordType,
@@ -13,6 +16,7 @@ import SendMessage, { SendOptionsType } from './textsecure/SendMessage';
 import { WebAPIType } from './textsecure/WebAPI';
 import utils from './textsecure/Helpers';
 import { CallingMessage as CallingMessageClass } from 'ringrtc';
+import { WhatIsThis } from './window.d';
 
 type AttachmentType = any;
 
@@ -171,6 +175,7 @@ type GroupsProtobufTypes = {
   GroupChange: typeof GroupChangeClass;
   GroupChanges: typeof GroupChangesClass;
   GroupAttributeBlob: typeof GroupAttributeBlobClass;
+  GroupExternalCredential: typeof GroupExternalCredentialClass;
 };
 
 type SignalServiceProtobufTypes = {
@@ -209,7 +214,9 @@ type SubProtocolProtobufTypes = {
   WebSocketResponseMessage: typeof WebSocketResponseMessageClass;
 };
 
-type ProtobufCollectionType = DeviceMessagesProtobufTypes &
+type ProtobufCollectionType = {
+  onLoad: (callback: () => unknown) => void;
+} & DeviceMessagesProtobufTypes &
   DeviceNameProtobufTypes &
   GroupsProtobufTypes &
   SignalServiceProtobufTypes &
@@ -250,6 +257,8 @@ export declare class MemberClass {
   profileKey?: ProtoBinaryType;
   presentation?: ProtoBinaryType;
   joinedAtVersion?: number;
+
+  // Note: only role and presentation are required when creating a group
 }
 
 type MemberRoleEnum = number;
@@ -434,6 +443,15 @@ export declare namespace GroupChangesClass {
   }
 }
 
+export declare class GroupExternalCredentialClass {
+  static decode: (
+    data: ArrayBuffer | ByteBufferClass,
+    encoding?: string
+  ) => GroupExternalCredentialClass;
+
+  token?: string;
+}
+
 export declare class GroupAttributeBlobClass {
   static decode: (
     data: ArrayBuffer | ByteBufferClass,
@@ -560,6 +578,8 @@ export declare class DataMessageClass {
   isViewOnce?: boolean;
   reaction?: DataMessageClass.Reaction;
   delete?: DataMessageClass.Delete;
+  bodyRanges?: Array<DataMessageClass.BodyRange>;
+  groupCallUpdate?: DataMessageClass.GroupCallUpdate;
 }
 
 // Note: we need to use namespaces to express nested classes in Typescript
@@ -600,10 +620,10 @@ export declare namespace DataMessageClass {
 
   // Note: deep nesting
   class Quote {
-    id?: ProtoBigNumberType;
-    author?: string;
-    authorUuid?: string;
-    text?: string;
+    id: ProtoBigNumberType | null;
+    author: string | null;
+    authorUuid: string | null;
+    text: string | null;
     attachments?: Array<DataMessageClass.Quote.QuotedAttachment>;
     bodyRanges?: Array<DataMessageClass.BodyRange>;
   }
@@ -615,11 +635,11 @@ export declare namespace DataMessageClass {
   }
 
   class Reaction {
-    emoji?: string;
-    remove?: boolean;
-    targetAuthorE164?: string;
-    targetAuthorUuid?: string;
-    targetTimestamp?: ProtoBigNumberType;
+    emoji: string | null;
+    remove: boolean;
+    targetAuthorE164: string | null;
+    targetAuthorUuid: string | null;
+    targetTimestamp: ProtoBigNumberType | null;
   }
 
   class Delete {
@@ -632,6 +652,8 @@ export declare namespace DataMessageClass {
     stickerId?: number;
     data?: AttachmentPointerClass;
   }
+
+  class GroupCallUpdate {}
 }
 
 // Note: we need to use namespaces to express nested classes in Typescript
@@ -700,6 +722,9 @@ export declare class GroupContextClass {
   name?: string | null;
   membersE164?: Array<string>;
   avatar?: AttachmentPointerClass | null;
+
+  // Note: these additional properties are added in the course of processing
+  derivedGroupV2Id?: string;
 }
 
 export declare class GroupContextV2Class {
@@ -929,6 +954,7 @@ export declare class ContactRecordClass {
   blocked?: boolean | null;
   whitelisted?: boolean | null;
   archived?: boolean | null;
+  markedUnread?: boolean;
 
   __unknownFields?: ArrayBuffer;
 }
@@ -944,6 +970,7 @@ export declare class GroupV1RecordClass {
   blocked?: boolean | null;
   whitelisted?: boolean | null;
   archived?: boolean | null;
+  markedUnread?: boolean;
 
   __unknownFields?: ArrayBuffer;
 }
@@ -959,6 +986,7 @@ export declare class GroupV2RecordClass {
   blocked?: boolean | null;
   whitelisted?: boolean | null;
   archived?: boolean | null;
+  markedUnread?: boolean;
 
   __unknownFields?: ArrayBuffer;
 }
@@ -995,6 +1023,7 @@ export declare class AccountRecordClass {
   typingIndicators?: boolean | null;
   linkPreviews?: boolean | null;
   pinnedConversations?: PinnedConversationClass[];
+  noteToSelfMarkedUnread?: boolean;
 
   __unknownFields?: ArrayBuffer;
 }
@@ -1107,10 +1136,10 @@ export declare namespace SyncMessageClass {
   }
 
   class MessageRequestResponse {
-    threadE164?: string;
-    threadUuid?: string;
-    groupId?: ProtoBinaryType;
-    type?: number;
+    threadE164: string | null;
+    threadUuid: string | null;
+    groupId: ProtoBinaryType | null;
+    type: number | null;
   }
 }
 

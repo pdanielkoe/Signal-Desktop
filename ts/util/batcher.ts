@@ -1,4 +1,9 @@
+// Copyright 2019-2020 Signal Messenger, LLC
+// SPDX-License-Identifier: AGPL-3.0-only
+
 import PQueue from 'p-queue';
+
+import { sleep } from './sleep';
 
 declare global {
   interface Window {
@@ -27,10 +32,6 @@ export type BatcherType<ItemType> = {
   flushAndWait: () => Promise<void>;
   unregister: () => void;
 };
-
-async function sleep(ms: number): Promise<void> {
-  await new Promise(resolve => setTimeout(resolve, ms));
-}
 
 export function createBatcher<ItemType>(
   options: BatcherOptionsType<ItemType>

@@ -1,3 +1,6 @@
+// Copyright 2020 Signal Messenger, LLC
+// SPDX-License-Identifier: AGPL-3.0-only
+
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 // Note: because this file is pulled in directly from background.html, we can't use any
@@ -73,6 +76,12 @@ Whisper.LeftGroupToast = Whisper.ToastView.extend({
   },
 });
 
+Whisper.InvalidConversationToast = Whisper.ToastView.extend({
+  render_attributes() {
+    return { toastMessage: window.i18n('invalidConversation') };
+  },
+});
+
 Whisper.OriginalNotFoundToast = Whisper.ToastView.extend({
   render_attributes() {
     return { toastMessage: window.i18n('originalMessageNotFound') };
@@ -112,6 +121,12 @@ Whisper.ConversationArchivedToast = Whisper.ToastView.extend({
 Whisper.ConversationUnarchivedToast = Whisper.ToastView.extend({
   render_attributes() {
     return { toastMessage: window.i18n('conversationReturnedToInbox') };
+  },
+});
+
+Whisper.ConversationMarkedUnreadToast = Whisper.ToastView.extend({
+  render_attributes() {
+    return { toastMessage: window.i18n('conversationMarkedUnread') };
   },
 });
 
@@ -289,6 +304,7 @@ Whisper.ConversationView = Whisper.View.extend({
     this.listenTo(this.model, 'attach-file', this.onChooseAttachment);
     this.listenTo(this.model, 'escape-pressed', this.resetPanel);
     this.listenTo(this.model, 'show-message-details', this.showMessageDetail);
+    this.listenTo(this.model, 'show-contact-modal', this.showContactModal);
     this.listenTo(this.model, 'toggle-reply', (messageId: any) => {
       const target = this.quote || !messageId ? null : messageId;
       this.setQuoteMessage(target);
@@ -353,6 +369,9 @@ Whisper.ConversationView = Whisper.View.extend({
         this.model.fetchLatestGroupV2Data.bind(this.model),
         FIVE_MINUTES
       );
+    this.model.throttledMaybeMigrateV1Group =
+      this.model.throttledMaybeMigrateV1Group ||
+      _.throttle(this.model.maybeMigrateV1Group.bind(this.model), FIVE_MINUTES);
 
     this.debouncedMaybeGrabLinkPreview = _.debounce(
       this.maybeGrabLinkPreview.bind(this),
@@ -416,7 +435,10 @@ Whisper.ConversationView = Whisper.View.extend({
 
   setPin(value: boolean) {
     if (value) {
-      const pinnedConversationIds = window.ConversationController.getPinnedConversationIds();
+      const pinnedConversationIds = window.storage.get<Array<string>>(
+        'pinnedConversationIds',
+        []
+      );
 
       if (pinnedConversationIds.length >= 4) {
         this.showToast(Whisper.PinnedConversationsFullToast);
@@ -429,137 +451,120 @@ Whisper.ConversationView = Whisper.View.extend({
   },
 
   setupHeader() {
-    const getHeaderProps = (_unknown?: unknown) => {
-      const expireTimer = this.model.get('expireTimer');
-      const expirationSettingName = expireTimer
-        ? Whisper.ExpirationTimerOptions.getName(expireTimer || 0)
-        : null;
-
-      return {
-        ...this.model.cachedProps,
-
-        leftGroup: this.model.get('left'),
-
-        disableTimerChanges:
-          this.model.get('left') ||
-          !this.model.getAccepted() ||
-          !this.model.canChangeTimer(),
-        showBackButton: Boolean(this.panels && this.panels.length),
-
-        expirationSettingName,
-        timerOptions: Whisper.ExpirationTimerOptions.map((item: any) => ({
-          name: item.getName(),
-          value: item.get('seconds'),
-        })),
-
-        muteExpirationLabel: this.getMuteExpirationLabel(),
-
-        onSetDisappearingMessages: (seconds: number) =>
-          this.setDisappearingMessages(seconds),
-        onDeleteMessages: () => this.destroyMessages(),
-        onResetSession: () => this.endSession(),
-        onSearchInConversation: () => {
-          const { searchInConversation } = window.reduxActions.search;
-          const name = this.model.isMe()
-            ? window.i18n('noteToSelf')
-            : this.model.getTitle();
-          searchInConversation(this.model.id, name);
-        },
-        onSetMuteNotifications: (ms: number) => this.setMuteNotifications(ms),
-        onSetPin: this.setPin.bind(this),
-        // These are view only and don't update the Conversation model, so they
-        //   need a manual update call.
-        onOutgoingAudioCallInConversation: async () => {
-          window.log.info(
-            'onOutgoingAudioCallInConversation: about to start an audio call'
-          );
-
-          const conversation = this.model;
-          const isVideoCall = false;
-
-          if (await this.isCallSafe()) {
-            window.log.info(
-              'onOutgoingAudioCallInConversation: call is deemed "safe". Making call'
-            );
-            await window.Signal.Services.calling.startCallingLobby(
-              conversation,
-              isVideoCall
-            );
-            window.log.info(
-              'onOutgoingAudioCallInConversation: started the call'
-            );
-          } else {
-            window.log.info(
-              'onOutgoingAudioCallInConversation: call is deemed "unsafe". Stopping'
-            );
-          }
-        },
-
-        onOutgoingVideoCallInConversation: async () => {
-          window.log.info(
-            'onOutgoingVideoCallInConversation: about to start a video call'
-          );
-          const conversation = this.model;
-          const isVideoCall = true;
-
-          if (await this.isCallSafe()) {
-            window.log.info(
-              'onOutgoingVideoCallInConversation: call is deemed "safe". Making call'
-            );
-            await window.Signal.Services.calling.startCallingLobby(
-              conversation,
-              isVideoCall
-            );
-            window.log.info(
-              'onOutgoingVideoCallInConversation: started the call'
-            );
-          } else {
-            window.log.info(
-              'onOutgoingVideoCallInConversation: call is deemed "unsafe". Stopping'
-            );
-          }
-        },
-
-        onShowSafetyNumber: () => {
-          this.showSafetyNumber();
-        },
-        onShowAllMedia: () => {
-          this.showAllMedia();
-        },
-        onShowGroupMembers: async () => {
-          await this.showMembers();
-          this.updateHeader();
-        },
-        onGoBack: () => {
-          this.resetPanel();
-        },
-
-        onArchive: () => {
-          this.model.setArchived(true);
-          this.model.trigger('unload', 'archive');
-
-          Whisper.ToastView.show(
-            Whisper.ConversationArchivedToast,
-            document.body
-          );
-        },
-        onMoveToInbox: () => {
-          this.model.setArchived(false);
-
-          Whisper.ToastView.show(
-            Whisper.ConversationUnarchivedToast,
-            document.body
-          );
-        },
-      };
-    };
     this.titleView = new Whisper.ReactWrapperView({
       className: 'title-wrapper',
-      Component: window.Signal.Components.ConversationHeader,
-      props: getHeaderProps(this.model),
+      JSX: window.Signal.State.Roots.createConversationHeader(
+        window.reduxStore,
+        {
+          id: this.model.id,
+
+          onSetDisappearingMessages: (seconds: number) =>
+            this.setDisappearingMessages(seconds),
+          onDeleteMessages: () => this.destroyMessages(),
+          onResetSession: () => this.endSession(),
+          onSearchInConversation: () => {
+            const { searchInConversation } = window.reduxActions.search;
+            const name = this.model.isMe()
+              ? window.i18n('noteToSelf')
+              : this.model.getTitle();
+            searchInConversation(this.model.id, name);
+          },
+          onSetMuteNotifications: (ms: number) => this.setMuteNotifications(ms),
+          onSetPin: this.setPin.bind(this),
+          // These are view only and don't update the Conversation model, so they
+          //   need a manual update call.
+          onOutgoingAudioCallInConversation: async () => {
+            window.log.info(
+              'onOutgoingAudioCallInConversation: about to start an audio call'
+            );
+
+            const conversation = this.model;
+            const isVideoCall = false;
+
+            if (await this.isCallSafe()) {
+              window.log.info(
+                'onOutgoingAudioCallInConversation: call is deemed "safe". Making call'
+              );
+              await window.Signal.Services.calling.startCallingLobby(
+                conversation,
+                isVideoCall
+              );
+              window.log.info(
+                'onOutgoingAudioCallInConversation: started the call'
+              );
+            } else {
+              window.log.info(
+                'onOutgoingAudioCallInConversation: call is deemed "unsafe". Stopping'
+              );
+            }
+          },
+
+          onOutgoingVideoCallInConversation: async () => {
+            window.log.info(
+              'onOutgoingVideoCallInConversation: about to start a video call'
+            );
+            const conversation = this.model;
+            const isVideoCall = true;
+
+            if (await this.isCallSafe()) {
+              window.log.info(
+                'onOutgoingVideoCallInConversation: call is deemed "safe". Making call'
+              );
+              await window.Signal.Services.calling.startCallingLobby(
+                conversation,
+                isVideoCall
+              );
+              window.log.info(
+                'onOutgoingVideoCallInConversation: started the call'
+              );
+            } else {
+              window.log.info(
+                'onOutgoingVideoCallInConversation: call is deemed "unsafe". Stopping'
+              );
+            }
+          },
+
+          onShowSafetyNumber: () => {
+            this.showSafetyNumber();
+          },
+          onShowAllMedia: () => {
+            this.showAllMedia();
+          },
+          onShowGroupMembers: async () => {
+            await this.showMembers();
+          },
+          onGoBack: () => {
+            this.resetPanel();
+          },
+
+          onArchive: () => {
+            this.model.setArchived(true);
+            this.model.trigger('unload', 'archive');
+
+            Whisper.ToastView.show(
+              Whisper.ConversationArchivedToast,
+              document.body
+            );
+          },
+          onMarkUnread: () => {
+            this.model.setMarkedUnread(true);
+
+            Whisper.ToastView.show(
+              Whisper.ConversationMarkedUnreadToast,
+              document.body
+            );
+          },
+          onMoveToInbox: () => {
+            this.model.setArchived(false);
+
+            Whisper.ToastView.show(
+              Whisper.ConversationUnarchivedToast,
+              document.body
+            );
+          },
+        }
+      ),
     });
-    this.updateHeader = () => this.titleView.update(getHeaderProps());
-    this.listenTo(this.model, 'change', this.updateHeader);
     this.$('.conversation-header').append(this.titleView.el);
   },
 
@@ -582,9 +587,15 @@ Whisper.ConversationView = Whisper.View.extend({
       onClickAddPack: () => this.showStickerManager(),
       onPickSticker: (packId: string, stickerId: number) =>
         this.sendStickerMessage({ packId, stickerId }),
-      onSubmit: (message: any) => this.sendMessage(message),
-      onEditorStateChange: (msg: any, caretLocation: any) =>
-        this.onEditorStateChange(msg, caretLocation),
+      onSubmit: (
+        message: any,
+        mentions: typeof window.Whisper.BodyRangesType
+      ) => this.sendMessage(message, mentions),
+      onEditorStateChange: (
+        msg: string,
+        bodyRanges: Array<typeof window.Whisper.BodyRangeType>,
+        caretLocation: number
+      ) => this.onEditorStateChange(msg, bodyRanges, caretLocation),
       onTextTooLong: () => this.showToast(Whisper.MessageBodyTooLongToast),
       onChooseAttachment: this.onChooseAttachment.bind(this),
       getQuotedMessage: () => this.model.get('quotedMessageId'),
@@ -659,8 +670,10 @@ Whisper.ConversationView = Whisper.View.extend({
   }): Promise<void> {
     const idLog = `${name}/${this.model.idForLogging()}`;
     const ONE_SECOND = 1000;
+    const TWO_SECONDS = 2000;
 
     let progressView: any | undefined;
+    let spinnerStart;
     let progressTimeout: NodeJS.Timeout | undefined = setTimeout(() => {
       window.log.info(`longRunningTaskWrapper/${idLog}: Creating spinner`);
 
@@ -670,7 +683,8 @@ Whisper.ConversationView = Whisper.View.extend({
         className: 'progress-modal-wrapper',
         Component: window.Signal.Components.ProgressModal,
       });
-    }, ONE_SECOND);
+      spinnerStart = Date.now();
+    }, TWO_SECONDS);
 
     // Note: any task we put here needs to have its own safety valve; this function will
     //   show a spinner until it's done
@@ -686,6 +700,13 @@ Whisper.ConversationView = Whisper.View.extend({
         progressTimeout = undefined;
       }
       if (progressView) {
+        const now = Date.now();
+        if (spinnerStart && now - spinnerStart < ONE_SECOND) {
+          window.log.info(
+            `longRunningTaskWrapper/${idLog}: Spinner shown for less than second, showing for another second`
+          );
+          await window.Signal.Util.sleep(ONE_SECOND);
+        }
         progressView.remove();
         progressView = undefined;
       }
@@ -738,6 +759,9 @@ Whisper.ConversationView = Whisper.View.extend({
     };
     const showMessageDetail = (messageId: any) => {
       this.showMessageDetail(messageId);
+    };
+    const showContactModal = (contactId: string) => {
+      this.showContactModal(contactId);
     };
     const openConversation = (conversationId: any, messageId: any) => {
       this.openConversation(conversationId, messageId);
@@ -930,6 +954,7 @@ Whisper.ConversationView = Whisper.View.extend({
         retrySend,
         scrollToQuotedMessage,
         showContactDetail,
+        showContactModal,
         showIdentity,
         showMessageDetail,
         showVisualAttachment,
@@ -1211,6 +1236,9 @@ Whisper.ConversationView = Whisper.View.extend({
     if (this.captionEditorView) {
       this.captionEditorView.remove();
     }
+    if (this.contactModalView) {
+      this.contactModalView.remove();
+    }
     if (this.stickerButtonView) {
       this.stickerButtonView.remove();
     }
@@ -1243,6 +1271,7 @@ Whisper.ConversationView = Whisper.View.extend({
         const panel = this.panels[i];
         panel.remove();
       }
+      window.reduxActions.conversations.setSelectedConversationPanelDepth(0);
     }
 
     this.remove();
@@ -1812,10 +1841,7 @@ Whisper.ConversationView = Whisper.View.extend({
       return fileName;
     }
 
-    return fileName
-      .split('.')
-      .slice(0, -1)
-      .join('.');
+    return fileName.split('.').slice(0, -1).join('.');
   },
 
   getType(contentType: any) {
@@ -2012,6 +2038,7 @@ Whisper.ConversationView = Whisper.View.extend({
     }
 
     this.model.throttledFetchLatestGroupV2Data();
+    this.model.throttledMaybeMigrateV1Group();
 
     const statusPromise = this.model.throttledGetProfiles();
     // eslint-disable-next-line more/no-then
@@ -2184,7 +2211,6 @@ Whisper.ConversationView = Whisper.View.extend({
     this.listenTo(this.model.messageCollection, 'remove', update);
 
     this.listenBack(view);
-    this.updateHeader();
   },
 
   focusMessageField() {
@@ -2197,11 +2223,6 @@ Whisper.ConversationView = Whisper.View.extend({
     if (compositionApi && compositionApi.current) {
       compositionApi.current.focusInput();
     }
-  },
-
-  focusMessageFieldAndClearDisabled() {
-    this.compositionApi.current.setDisabled(false);
-    this.focusMessageField();
   },
 
   disableMessageField() {
@@ -2246,6 +2267,7 @@ Whisper.ConversationView = Whisper.View.extend({
       // we pass this in to allow nested panels
       listenBack: this.listenBack.bind(this),
       needVerify: options.needVerify,
+      conversation: this.model,
     });
 
     this.listenBack(view);
@@ -2299,7 +2321,6 @@ Whisper.ConversationView = Whisper.View.extend({
         model: conversation,
       });
       this.listenBack(view);
-      this.updateHeader();
     }
   },
 
@@ -2587,6 +2608,49 @@ Whisper.ConversationView = Whisper.View.extend({
     window.Signal.Backbone.Views.Lightbox.show(this.lightboxGalleryView.el);
   },
 
+  showContactModal(contactId: string) {
+    if (this.contactModalView) {
+      this.contactModalView.remove();
+      this.contactModalView = null;
+    }
+
+    this.previousFocus = document.activeElement;
+
+    const hideContactModal = () => {
+      if (this.contactModalView) {
+        this.contactModalView.remove();
+        this.contactModalView = null;
+        if (this.previousFocus && this.previousFocus.focus) {
+          this.previousFocus.focus();
+          this.previousFocus = null;
+        }
+      }
+    };
+
+    this.contactModalView = new Whisper.ReactWrapperView({
+      className: 'progress-modal-wrapper',
+      JSX: window.Signal.State.Roots.createContactModal(window.reduxStore, {
+        contactId,
+        currentConversationId: this.model.id,
+        onClose: hideContactModal,
+        openConversation: (conversationId: string) => {
+          hideContactModal();
+          this.openConversation(conversationId);
+        },
+        showSafetyNumber: (conversationId: string) => {
+          hideContactModal();
+          this.showSafetyNumber(conversationId);
+        },
+        removeMember: (conversationId: string) => {
+          hideContactModal();
+          this.model.removeFromGroupV2(conversationId);
+        },
+      }),
+    });
+
+    this.contactModalView.render();
+  },
+
   showMessageDetail(messageId: any) {
     const message = this.model.messageCollection.get(messageId);
     if (!message) {
@@ -2618,7 +2682,6 @@ Whisper.ConversationView = Whisper.View.extend({
     // We could listen to all involved contacts, but we'll call that overkill
 
     this.listenBack(view);
-    this.updateHeader();
     view.render();
   },
 
@@ -2632,7 +2695,6 @@ Whisper.ConversationView = Whisper.View.extend({
     });
 
     this.listenBack(view);
-    this.updateHeader();
     view.render();
   },
 
@@ -2655,7 +2717,6 @@ Whisper.ConversationView = Whisper.View.extend({
     });
 
     this.listenBack(view);
-    this.updateHeader();
   },
 
   async openConversation(number: any) {
@@ -2674,6 +2735,10 @@ Whisper.ConversationView = Whisper.View.extend({
     view.$el.one('animationend', () => {
       view.$el.addClass('panel--static');
     });
+
+    window.reduxActions.conversations.setSelectedConversationPanelDepth(
+      this.panels.length
+    );
   },
   resetPanel() {
     if (!this.panels || !this.panels.length) {
@@ -2694,7 +2759,6 @@ Whisper.ConversationView = Whisper.View.extend({
     if (this.panels.length > 0) {
       this.panels[0].$el.fadeIn(250);
     }
-    this.updateHeader();
 
     view.$el.addClass('panel--remove').one('transitionend', () => {
       view.remove();
@@ -2704,6 +2768,10 @@ Whisper.ConversationView = Whisper.View.extend({
         window.dispatchEvent(new Event('resize'));
       }
     });
+
+    window.reduxActions.conversations.setSelectedConversationPanelDepth(
+      this.panels.length
+    );
   },
 
   endSession() {
@@ -2829,6 +2897,17 @@ Whisper.ConversationView = Whisper.View.extend({
         return;
       }
 
+      const mandatoryProfileSharingEnabled = window.Signal.RemoteConfig.isEnabled(
+        'desktop.mandatoryProfileSharing'
+      );
+      if (mandatoryProfileSharingEnabled && !this.model.get('profileSharing')) {
+        this.model.set({ profileSharing: true });
+      }
+
+      if (this.showInvalidMessageToast()) {
+        return;
+      }
+
       const { packId, stickerId } = options;
       this.model.sendStickerMessage(packId, stickerId);
     } catch (error) {
@@ -2910,7 +2989,8 @@ Whisper.ConversationView = Whisper.View.extend({
       if (message) {
         this.quote = await this.model.makeQuote(this.quotedMessage);
 
-        this.focusMessageFieldAndClearDisabled();
+        this.enableMessageField();
+        this.focusMessageField();
       }
     }
 
@@ -2961,37 +3041,14 @@ Whisper.ConversationView = Whisper.View.extend({
     });
   },
 
-  async sendMessage(message = '', options = {}) {
-    this.sendStart = Date.now();
-
-    try {
-      const contacts = await this.getUntrustedContacts(options);
-      this.disableMessageField();
-
-      if (contacts && contacts.length) {
-        const sendAnyway = await this.showSendAnywayDialog(contacts);
-        if (sendAnyway) {
-          this.sendMessage(message, { force: true });
-          return;
-        }
-
-        this.focusMessageFieldAndClearDisabled();
-        return;
-      }
-    } catch (error) {
-      this.focusMessageFieldAndClearDisabled();
-      window.log.error(
-        'sendMessage error:',
-        error && error.stack ? error.stack : error
-      );
-      return;
-    }
-
-    this.model.clearTypingTimers();
-
+  showInvalidMessageToast(messageText?: string): boolean {
     let ToastView;
+
     if (window.reduxStore.getState().expiration.hasExpired) {
       ToastView = Whisper.ExpiredToast;
+    }
+    if (!this.model.isValid()) {
+      ToastView = Whisper.InvalidConversationToast;
     }
     if (
       this.model.isPrivate() &&
@@ -3009,19 +3066,61 @@ Whisper.ConversationView = Whisper.View.extend({
     if (!this.model.isPrivate() && this.model.get('left')) {
       ToastView = Whisper.LeftGroupToast;
     }
-    if (message.length > MAX_MESSAGE_BODY_LENGTH) {
+    if (messageText && messageText.length > MAX_MESSAGE_BODY_LENGTH) {
       ToastView = Whisper.MessageBodyTooLongToast;
     }
 
     if (ToastView) {
       this.showToast(ToastView);
-      this.focusMessageFieldAndClearDisabled();
+      return true;
+    }
+
+    return false;
+  },
+
+  async sendMessage(message = '', mentions = [], options = {}) {
+    this.sendStart = Date.now();
+
+    try {
+      const contacts = await this.getUntrustedContacts(options);
+      this.disableMessageField();
+
+      if (contacts && contacts.length) {
+        const sendAnyway = await this.showSendAnywayDialog(contacts);
+        if (sendAnyway) {
+          this.sendMessage(message, mentions, { force: true });
+          return;
+        }
+
+        this.enableMessageField();
+        return;
+      }
+    } catch (error) {
+      this.enableMessageField();
+      window.log.error(
+        'sendMessage error:',
+        error && error.stack ? error.stack : error
+      );
+      return;
+    }
+
+    this.model.clearTypingTimers();
+
+    if (this.showInvalidMessageToast(message)) {
+      this.enableMessageField();
       return;
     }
 
     try {
       if (!message.length && !this.hasFiles() && !this.voiceNoteAttachment) {
         return;
+      }
+
+      const mandatoryProfileSharingEnabled = window.Signal.RemoteConfig.isEnabled(
+        'desktop.mandatoryProfileSharing'
+      );
+      if (mandatoryProfileSharingEnabled && !this.model.get('profileSharing')) {
+        this.model.set({ profileSharing: true });
       }
 
       const attachments = await this.getFiles();
@@ -3032,10 +3131,13 @@ Whisper.ConversationView = Whisper.View.extend({
         message,
         attachments,
         this.quote,
-        this.getLinkPreview()
+        this.getLinkPreview(),
+        undefined, // sticker
+        mentions
       );
 
       this.compositionApi.current.reset();
+      this.model.setMarkedUnread(false);
       this.setQuoteMessage(null);
       this.resetLinkPreview();
       this.clearAttachments();
@@ -3045,17 +3147,24 @@ Whisper.ConversationView = Whisper.View.extend({
         error && error.stack ? error.stack : error
       );
     } finally {
-      this.focusMessageFieldAndClearDisabled();
+      this.enableMessageField();
     }
   },
 
-  onEditorStateChange(messageText: any, caretLocation: any) {
+  onEditorStateChange(
+    messageText: string,
+    bodyRanges: Array<typeof window.Whisper.BodyRangeType>,
+    caretLocation?: number
+  ) {
     this.maybeBumpTyping(messageText);
-    this.debouncedSaveDraft(messageText);
+    this.debouncedSaveDraft(messageText, bodyRanges);
     this.debouncedMaybeGrabLinkPreview(messageText, caretLocation);
   },
 
-  async saveDraft(messageText: any) {
+  async saveDraft(
+    messageText: any,
+    bodyRanges: Array<typeof window.Whisper.BodyRangeType>
+  ) {
     const trimmed =
       messageText && messageText.length > 0 ? messageText.trim() : '';
 
@@ -3063,6 +3172,7 @@ Whisper.ConversationView = Whisper.View.extend({
       this.model.set({
         draft: null,
         draftChanged: true,
+        draftBodyRanges: [],
       });
       await this.saveModel();
 
@@ -3073,12 +3183,13 @@ Whisper.ConversationView = Whisper.View.extend({
       this.model.set({
         draft: messageText,
         draftChanged: true,
+        draftBodyRanges: bodyRanges,
       });
       await this.saveModel();
     }
   },
 
-  maybeGrabLinkPreview(message: any, caretLocation: any) {
+  maybeGrabLinkPreview(message: string, caretLocation?: number) {
     // Don't generate link previews if user has turned them off
     if (!window.storage.get('linkPreviews', false)) {
       return;

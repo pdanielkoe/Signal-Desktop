@@ -1,6 +1,7 @@
-import { ColorType } from '../types/Colors';
+// Copyright 2018-2020 Signal Messenger, LLC
+// SPDX-License-Identifier: AGPL-3.0-only
 
-// import { missingCaseError } from './missingCaseError';
+import { ColorType } from '../types/Colors';
 
 type OldColorType =
   | 'amber'
@@ -22,9 +23,11 @@ type OldColorType =
   | 'red'
   | 'teal'
   | 'yellow'
-  | 'ultramarine';
+  | 'ultramarine'
+  | string
+  | undefined;
 
-export function migrateColor(color: OldColorType): ColorType {
+export function migrateColor(color?: OldColorType): ColorType {
   switch (color) {
     // These colors no longer exist
     case 'orange':
@@ -61,10 +64,6 @@ export function migrateColor(color: OldColorType): ColorType {
     case 'grey':
     case 'ultramarine':
       return color;
-
-    // Can uncomment this to ensure that we've covered all potential cases
-    // default:
-    //   throw missingCaseError(color);
 
     default:
       return 'grey';

@@ -1,3 +1,6 @@
+// Copyright 2020 Signal Messenger, LLC
+// SPDX-License-Identifier: AGPL-3.0-only
+
 import * as React from 'react';
 
 import { action } from '@storybook/addon-actions';
@@ -14,9 +17,11 @@ const i18n = setupI18n('en', enMessages);
 const story = storiesOf('Components/Conversation/MessageDetail', module);
 
 const defaultMessage: MessageProps = {
+  authorId: 'some-id',
   authorTitle: 'Max',
   canReply: true,
   canDeleteForEveryone: true,
+  canDownload: true,
   clearSelectedMessage: () => null,
   conversationId: 'my-convo',
   conversationType: 'direct',
@@ -37,6 +42,7 @@ const defaultMessage: MessageProps = {
   retrySend: () => null,
   scrollToQuotedMessage: () => null,
   showContactDetail: () => null,
+  showContactModal: () => null,
   showExpiredIncomingTapToViewToast: () => null,
   showExpiredOutgoingTapToViewToast: () => null,
   showMessageDetail: () => null,

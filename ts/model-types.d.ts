@@ -1,7 +1,10 @@
+// Copyright 2020 Signal Messenger, LLC
+// SPDX-License-Identifier: AGPL-3.0-only
+
 import * as Backbone from 'backbone';
 
 import { GroupV2ChangeType } from './groups';
-import { LocalizerType, BodyRangesType } from './types/Util';
+import { LocalizerType, BodyRangeType, BodyRangesType } from './types/Util';
 import { CallHistoryDetailsType } from './types/Calling';
 import { ColorType } from './types/Colors';
 import {
@@ -15,6 +18,7 @@ import { UserMessage } from './types/Message';
 import { MessageModel } from './models/messages';
 import { ConversationModel } from './models/conversations';
 import { ProfileNameChangeType } from './util/getStringForProfileChange';
+import { CapabilitiesType } from './textsecure/WebAPI';
 
 interface ModelAttributesInterface {
   [key: string]: any;
@@ -53,6 +57,7 @@ export type MessageAttributesType = {
   deletedForEveryoneTimestamp?: number;
   delivered: number;
   delivered_to: Array<string | null>;
+  droppedGV2MemberIds?: Array<string>;
   errors: Array<CustomError> | null;
   expirationStartTimestamp: number | null;
   expireTimer: number;
@@ -69,6 +74,7 @@ export type MessageAttributesType = {
   isErased: boolean;
   isTapToViewInvalid: boolean;
   isViewOnce: boolean;
+  invitedGV2Members?: Array<GroupV2PendingMemberType>;
   key_changed: string;
   local: boolean;
   logger: unknown;
@@ -84,7 +90,7 @@ export type MessageAttributesType = {
     referencedMessageNotFound: boolean;
     text: string;
   } | null;
-  reactions: Array<{ fromId: string; emoji: unknown; timestamp: unknown }>;
+  reactions: Array<{ fromId: string; emoji: string; timestamp: number }>;
   read_by: Array<string | null>;
   requiredProtocolVersion: number;
   sent: boolean;
@@ -140,15 +146,17 @@ export type ConversationAttributesTypeType = 'private' | 'group';
 export type ConversationAttributesType = {
   accessKey: string | null;
   addedBy?: string;
-  capabilities: { uuid: string };
-  color?: ColorType;
+  capabilities?: CapabilitiesType;
+  color?: string;
   discoveredUnregisteredAt: number;
   draftAttachments: Array<unknown>;
+  draftBodyRanges: Array<BodyRangeType>;
   draftTimestamp: number | null;
   inbox_position: number;
   isPinned: boolean;
-  lastMessageDeletedForEveryone: unknown;
+  lastMessageDeletedForEveryone: boolean;
   lastMessageStatus: LastMessageStatus | null;
+  markedUnread: boolean;
   messageCount: number;
   messageCountBeforeMessageRequests: number;
   messageRequestResponseType: number;
@@ -197,6 +205,7 @@ export type ConversationAttributesType = {
 
   // GroupV1 only
   members?: Array<string>;
+  derivedGroupV2Id?: string;
 
   // GroupV2 core info
   masterKey?: string;
@@ -217,6 +226,8 @@ export type ConversationAttributesType = {
   expireTimer?: number;
   membersV2?: Array<GroupV2MemberType>;
   pendingMembersV2?: Array<GroupV2PendingMemberType>;
+  previousGroupV1Id?: string;
+  previousGroupV1Members?: Array<string>;
 };
 
 export type GroupV2MemberType = {
@@ -225,7 +236,7 @@ export type GroupV2MemberType = {
   joinedAtVersion: number;
 };
 export type GroupV2PendingMemberType = {
-  addedByUserId: string;
+  addedByUserId?: string;
   conversationId: string;
   timestamp: number;
 };

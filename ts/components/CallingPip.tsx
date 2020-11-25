@@ -1,54 +1,22 @@
+// Copyright 2020 Signal Messenger, LLC
+// SPDX-License-Identifier: AGPL-3.0-only
+
 import React from 'react';
+import { CallingPipRemoteVideo } from './CallingPipRemoteVideo';
+import { LocalizerType } from '../types/Util';
+import { VideoFrameSource } from '../types/Calling';
 import {
-  CallDetailsType,
+  ActiveCallType,
   HangUpType,
   SetLocalPreviewType,
   SetRendererCanvasType,
 } from '../state/ducks/calling';
-import { Avatar } from './Avatar';
-import { CallBackgroundBlur } from './CallBackgroundBlur';
-import { LocalizerType } from '../types/Util';
-
-function renderAvatar(
-  callDetails: CallDetailsType,
-  i18n: LocalizerType
-): JSX.Element {
-  const {
-    avatarPath,
-    color,
-    name,
-    phoneNumber,
-    profileName,
-    title,
-  } = callDetails;
-
-  return (
-    <div className="module-calling-pip__video--remote">
-      <CallBackgroundBlur avatarPath={avatarPath} color={color}>
-        <div className="module-calling-pip__video--avatar">
-          <Avatar
-            avatarPath={avatarPath}
-            color={color || 'ultramarine'}
-            noteToSelf={false}
-            conversationType="direct"
-            i18n={i18n}
-            name={name}
-            phoneNumber={phoneNumber}
-            profileName={profileName}
-            title={title}
-            size={52}
-          />
-        </div>
-      </CallBackgroundBlur>
-    </div>
-  );
-}
 
 export type PropsType = {
-  callDetails: CallDetailsType;
+  activeCall: ActiveCallType;
+  getGroupCallVideoFrameSource: (demuxId: number) => VideoFrameSource;
   hangUp: (_: HangUpType) => void;
   hasLocalVideo: boolean;
-  hasRemoteVideo: boolean;
   i18n: LocalizerType;
   setLocalPreview: (_: SetLocalPreviewType) => void;
   setRendererCanvas: (_: SetRendererCanvasType) => void;
@@ -61,10 +29,10 @@ const PIP_DEFAULT_Y = 56;
 const PIP_PADDING = 8;
 
 export const CallingPip = ({
-  callDetails,
+  activeCall,
+  getGroupCallVideoFrameSource,
   hangUp,
   hasLocalVideo,
-  hasRemoteVideo,
   i18n,
   setLocalPreview,
   setRendererCanvas,
@@ -72,7 +40,6 @@ export const CallingPip = ({
 }: PropsType): JSX.Element | null => {
   const videoContainerRef = React.useRef(null);
   const localVideoRef = React.useRef(null);
-  const remoteVideoRef = React.useRef(null);
 
   const [dragState, setDragState] = React.useState({
     offsetX: 0,
@@ -87,8 +54,7 @@ export const CallingPip = ({
 
   React.useEffect(() => {
     setLocalPreview({ element: localVideoRef });
-    setRendererCanvas({ element: remoteVideoRef });
-  }, [setLocalPreview, setRendererCanvas]);
+  }, [setLocalPreview]);
 
   const handleMouseMove = React.useCallback(
     (ev: MouseEvent) => {
@@ -195,14 +161,12 @@ export const CallingPip = ({
         transition: dragState.isDragging ? 'none' : 'transform ease-out 300ms',
       }}
     >
-      {hasRemoteVideo ? (
-        <canvas
-          className="module-calling-pip__video--remote"
-          ref={remoteVideoRef}
-        />
-      ) : (
-        renderAvatar(callDetails, i18n)
-      )}
+      <CallingPipRemoteVideo
+        activeCall={activeCall}
+        getGroupCallVideoFrameSource={getGroupCallVideoFrameSource}
+        i18n={i18n}
+        setRendererCanvas={setRendererCanvas}
+      />
       {hasLocalVideo ? (
         <video
           className="module-calling-pip__video--local"
@@ -212,19 +176,21 @@ export const CallingPip = ({
       ) : null}
       <div className="module-calling-pip__actions">
         <button
-          type="button"
           aria-label={i18n('calling__hangup')}
           className="module-calling-pip__button--hangup"
           onClick={() => {
-            hangUp({ callId: callDetails.callId });
+            hangUp({ conversationId: activeCall.conversation.id });
           }}
+          type="button"
         />
         <button
-          type="button"
-          aria-label={i18n('calling__pip')}
+          aria-label={i18n('calling__pip--off')}
           className="module-calling-pip__button--pip"
           onClick={togglePip}
-        />
+          type="button"
+        >
+          <div />
+        </button>
       </div>
     </div>
   );
