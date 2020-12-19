@@ -12,7 +12,7 @@ import {
 } from 'react-contextmenu';
 
 import { Emojify } from './Emojify';
-import { Avatar } from '../Avatar';
+import { Avatar, AvatarSize } from '../Avatar';
 import { InContactsIcon } from '../InContactsIcon';
 
 import { LocalizerType } from '../../types/Util';
@@ -23,6 +23,14 @@ import {
   TimerOption,
 } from '../../util/ExpirationTimerOptions';
 import { isMuted } from '../../util/isMuted';
+import { missingCaseError } from '../../util/missingCaseError';
+
+export enum OutgoingCallButtonStyle {
+  None,
+  JustVideo,
+  Both,
+  Join,
+}
 
 export interface PropsDataType {
   id: string;
@@ -49,7 +57,7 @@ export interface PropsDataType {
   muteExpiresAt?: number;
 
   showBackButton?: boolean;
-  showCallButtons?: boolean;
+  outgoingCallButtonStyle: OutgoingCallButtonStyle;
 }
 
 export interface PropsActionsType {
@@ -186,7 +194,7 @@ export class ConversationHeader extends React.Component<PropsType> {
           name={name}
           phoneNumber={phoneNumber}
           profileName={profileName}
-          size={28}
+          size={AvatarSize.THIRTY_TWO}
         />
       </span>
     );
@@ -264,42 +272,70 @@ export class ConversationHeader extends React.Component<PropsType> {
       i18n,
       onOutgoingAudioCallInConversation,
       onOutgoingVideoCallInConversation,
-      showCallButtons,
+      outgoingCallButtonStyle,
       showBackButton,
     } = this.props;
 
-    if (!showCallButtons) {
-      return null;
-    }
-
-    return (
-      <>
-        <button
-          type="button"
-          onClick={onOutgoingVideoCallInConversation}
-          className={classNames(
-            'module-conversation-header__video-calling-button',
-            showBackButton
-              ? null
-              : 'module-conversation-header__video-calling-button--show'
-          )}
-          disabled={showBackButton}
-          aria-label={i18n('makeOutgoingVideoCall')}
-        />
-        <button
-          type="button"
-          onClick={onOutgoingAudioCallInConversation}
-          className={classNames(
-            'module-conversation-header__audio-calling-button',
-            showBackButton
-              ? null
-              : 'module-conversation-header__audio-calling-button--show'
-          )}
-          disabled={showBackButton}
-          aria-label={i18n('makeOutgoingCall')}
-        />
-      </>
+    const videoButton = (
+      <button
+        type="button"
+        onClick={onOutgoingVideoCallInConversation}
+        className={classNames(
+          'module-conversation-header__calling-button',
+          'module-conversation-header__calling-button--video',
+          showBackButton
+            ? null
+            : 'module-conversation-header__calling-button--show'
+        )}
+        disabled={showBackButton}
+        aria-label={i18n('makeOutgoingVideoCall')}
+      />
     );
+
+    switch (outgoingCallButtonStyle) {
+      case OutgoingCallButtonStyle.None:
+        return null;
+      case OutgoingCallButtonStyle.JustVideo:
+        return videoButton;
+      case OutgoingCallButtonStyle.Both:
+        return (
+          <>
+            {videoButton}
+            <button
+              type="button"
+              onClick={onOutgoingAudioCallInConversation}
+              className={classNames(
+                'module-conversation-header__calling-button',
+                'module-conversation-header__calling-button--audio',
+                showBackButton
+                  ? null
+                  : 'module-conversation-header__calling-button--show'
+              )}
+              disabled={showBackButton}
+              aria-label={i18n('makeOutgoingCall')}
+            />
+          </>
+        );
+      case OutgoingCallButtonStyle.Join:
+        return (
+          <button
+            type="button"
+            onClick={onOutgoingVideoCallInConversation}
+            className={classNames(
+              'module-conversation-header__calling-button',
+              'module-conversation-header__calling-button--join',
+              showBackButton
+                ? null
+                : 'module-conversation-header__calling-button--show'
+            )}
+            disabled={showBackButton}
+          >
+            {i18n('joinOngoingCall')}
+          </button>
+        );
+      default:
+        throw missingCaseError(outgoingCallButtonStyle);
+    }
   }
 
   public renderMenu(triggerId: string): JSX.Element {
@@ -446,8 +482,8 @@ export class ConversationHeader extends React.Component<PropsType> {
           </div>
         </div>
         {this.renderExpirationLength()}
-        {this.renderSearchButton()}
         {this.renderOutgoingCallButtons()}
+        {this.renderSearchButton()}
         {this.renderMoreButton(triggerId)}
         {this.renderMenu(triggerId)}
       </div>

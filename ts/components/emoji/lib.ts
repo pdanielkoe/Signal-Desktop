@@ -215,7 +215,7 @@ const fuse = new Fuse(data, {
   minMatchCharLength: 1,
   tokenize: true,
   tokenSeparator: /[-_\s]+/,
-  keys: ['name', 'short_name', 'short_names'],
+  keys: ['short_name', 'name'],
 });
 
 export function search(query: string, count = 0): Array<EmojiData> {
